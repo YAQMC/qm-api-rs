@@ -26,6 +26,9 @@ Client
 - **Android session 是账号运行态**，按 `musicid` 缓存在 `sessions` 中
   （不落在 `Device` 上），`session_for` 返回不可变快照，与 `credential`
   原子一致，多账号并发不串号。
+- 每次 `set_device` 在同一把锁下写入新 Device 并递增 `device_epoch`。
+  QIMEI / GetSession 等异步请求绑定**开始时**的 epoch；响应返回后若 epoch
+  已变，丢弃 stale 结果，绝不把 D0 的 QIMEI/Session 写进 D1。
 - `state_lock` 保证多个并发 stale 请求只触发一次 session / QIMEI 申请。
 
 ## CGI 请求流程

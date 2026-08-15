@@ -399,9 +399,11 @@ let mut phone = PhoneLoginSession::new(client.login.clone(), "13800138000", fals
 phone.send_authcode().await?;
 let credential = phone.authorize("123456").await?;
 
-// 二维码登录会话 (自动轮询直到完成)
+// 二维码登录会话
 let mut session = QRCodeLoginSession::new(client.login.clone(), QRLoginType::Qq);
 let qr = session.get_qrcode().await?;              // 拿到二维码给用户扫
+// GUI 实时事件: session.next_event().await?
+// 便利收集: session.iter_events().await?  (等到结束才返回 Vec)
 let credential = session.wait_qrcode_login().await?;
 client.set_credential(credential);
 ```

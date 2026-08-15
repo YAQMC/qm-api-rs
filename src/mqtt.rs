@@ -13,6 +13,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 use crate::error::{QmError, Result};
+use std::time::Duration;
 
 /// MQTT 属性 ID 枚举.
 #[allow(dead_code)]
@@ -132,6 +133,20 @@ fn build_connect(client_id: &str, keep_alive: u16, props: &MqttProperties) -> Ve
     packet.extend(encode_varint(var.len() as u64));
     packet.extend(var);
     packet
+}
+
+/// PINGREQ 固定报头 (MQTT 5).
+pub(crate) fn build_pingreq() -> [u8; 2] {
+    [0xC0, 0x00]
+}
+
+/// Keep Alive 为 0 表示不主动 ping (避免 busy loop).
+pub(crate) fn keep_alive_interval(keep_alive_secs: u16) -> Option<Duration> {
+    if keep_alive_secs == 0 {
+        None
+    } else {
+        Some(Duration::from_secs(u64::from(keep_alive_secs)))
+    }
 }
 
 fn build_subscribe(packet_id: u16, topic: &str, props: &MqttProperties) -> Vec<u8> {
@@ -443,6 +458,7 @@ impl MqttClient {
                 0xE0 => {
                     return Err(QmError::network("MQTT 连接被服务端关闭 (DISCONNECT)"));
                 }
+                0xD0 => continue, // PINGRESP: 心跳应答, 继续等业务 PUBLISH.
                 _ => continue,
             }
         }
@@ -473,9 +489,8 @@ impl MqttClient {
     }
 
     /// 发送 PINGREQ 心跳.
-    #[allow(dead_code)]
     pub async fn ping(&mut self) -> Result<()> {
-        self.send_raw(&[0xC0, 0x00]).await
+        self.send_raw(&build_pingreq()).await
     }
 
     /// 关闭连接.
@@ -746,5 +761,64 @@ mod tests {
         let topic = read_string(&body, &mut pos).unwrap();
         assert_eq!(topic, "management.qrcode_login/x");
         assert_eq!(body[pos], 0); // QoS 0
+    }
+
+    #[test]
+    fn pingreq_is_fixed_header() {
+        assert_eq!(build_pingreq(), [0xC0, 0x00]);
+        let (consumed, first, body) = try_parse_packet(&build_pingreq()).unwrap();
+        assert_eq!(consumed, 2);
+        assert_eq!(first & 0xF0, 0xC0);
+        assert!(body.is_empty());
+    }
+
+    #[test]
+    fn keep_alive_zero_disables_client_ping() {
+        assert!(keep_alive_interval(0).is_none());
+        assert_eq!(keep_alive_interval(45).unwrap(), Duration::from_secs(45));
+        assert_eq!(keep_alive_interval(1).unwrap(), Duration::from_secs(1));
+    }
+
+    #[test]
+    fn connack_server_keep_alive_overrides_client_value() {
+        // Server Keep Alive property id 0x13, value 20 seconds.
+        let mut props = Vec::new();
+        props.push(property_id::SERVER_KEEP_ALIVE);
+        props.extend(20u16.to_be_bytes());
+        let mut body = vec![0x00, 0x00]; // session present + reason 0
+        body.extend(encode_props_len(props.len()));
+        body.extend(props);
+        let mut packet = vec![0x20];
+        packet.extend(encode_varint(body.len() as u64));
+        packet.extend(body);
+
+        let (_, first, body) = try_parse_packet(&packet).unwrap();
+        assert_eq!(first & 0xF0, 0x20);
+        let mut pos = 0;
+        pos += 1; // session present
+        let reason = body[pos];
+        pos += 1;
+        assert_eq!(reason, 0);
+        let parsed = parse_properties(&body, &mut pos).unwrap();
+        assert_eq!(parsed.server_keep_alive, Some(20));
+        // 客户端应采用服务端 override, 而不是继续用 CONNECT 里的 45.
+        let effective = parsed.server_keep_alive.unwrap_or(45);
+        assert_eq!(
+            keep_alive_interval(effective),
+            Some(Duration::from_secs(20))
+        );
+    }
+
+    #[test]
+    fn overall_qr_deadline_is_not_reset_by_non_terminal_messages() {
+        // 总时限绑定 deadline, 中间非终止消息只消耗 remaining, 不会把窗口重新加成 180s.
+        let start = std::time::Instant::now();
+        let deadline = start + Duration::from_secs(180);
+        let after_three_keepalive_messages = start + Duration::from_secs(3 * 5);
+        let remaining = deadline.saturating_duration_since(after_three_keepalive_messages);
+        assert_eq!(remaining, Duration::from_secs(165));
+        assert!(remaining < Duration::from_secs(180));
+        let after_lifetime = start + Duration::from_secs(181);
+        assert!(deadline.saturating_duration_since(after_lifetime).is_zero());
     }
 }

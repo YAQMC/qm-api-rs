@@ -36,7 +36,7 @@ jsonpath_model!(GetMvDetailResponse {
 });
 
 /// 单一路径规格下的 MV 播放地址信息.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct MvUrlItem {
     pub url: Vec<String>,
@@ -53,6 +53,46 @@ pub struct MvUrlItem {
     pub format: i64,
     #[serde(alias = "fileSize")]
     pub file_size: i64,
+}
+
+impl std::fmt::Debug for MvUrlItem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        fn redact_urls(urls: &[String]) -> String {
+            if urls.is_empty() {
+                "[]".into()
+            } else {
+                format!("[redacted; {} urls]", urls.len())
+            }
+        }
+        f.debug_struct("MvUrlItem")
+            .field("url", &redact_urls(&self.url))
+            .field("freeflow_url", &redact_urls(&self.freeflow_url))
+            .field("comm_url", &redact_urls(&self.comm_url))
+            .field("cn", &self.cn)
+            .field(
+                "vkey",
+                &if self.vkey.is_empty() {
+                    ""
+                } else {
+                    "[redacted]"
+                },
+            )
+            .field("expire", &self.expire)
+            .field("code", &self.code)
+            .field("filetype", &self.filetype)
+            .field(
+                "m3u8",
+                &if self.m3u8.is_empty() {
+                    ""
+                } else {
+                    "[redacted]"
+                },
+            )
+            .field("new_file_type", &self.new_file_type)
+            .field("format", &self.format)
+            .field("file_size", &self.file_size)
+            .finish()
+    }
 }
 
 /// 同一 MV 在不同协议下的播放地址集合.

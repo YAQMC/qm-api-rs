@@ -11,6 +11,7 @@ use rsa::RsaPublicKey;
 use serde_json::{json, Value};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::error::{QmError, Result as QmResult};
 use crate::utils::calc_md5;
 use crate::Device;
 
@@ -21,6 +22,8 @@ const SECRET: &str = "ZdJqM15EeO2zWc08";
 const APP_KEY: &str = "0AND0HD6FE4HY80F";
 const CHANNEL_ID: &str = "10003505";
 const PACKAGE_ID: &str = "com.tencent.qqmusic";
+
+type QimeiHttpRequest = (i64, Vec<(String, String)>, Value);
 
 /// RSA PKCS1v15 加密.
 pub fn rsa_encrypt(content: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
@@ -165,16 +168,20 @@ pub fn build_qimei_request(
     device: &Device,
     version: &str,
     sdk_version: &str,
-) -> (i64, Vec<(String, String)>, Value) {
+) -> QmResult<QimeiHttpRequest> {
     let payload = random_payload_by_device(device, version, sdk_version);
     let crypt_key = rand_hex(16);
     let nonce = rand_hex(16);
     let ts = now_secs();
 
     let b64 = base64::engine::general_purpose::STANDARD;
-    let key = b64.encode(rsa_encrypt(crypt_key.as_bytes()).expect("rsa encrypt"));
+    let key = b64.encode(
+        rsa_encrypt(crypt_key.as_bytes())
+            .map_err(|e| QmError::Other(format!("QIMEI RSA encrypt failed: {e}")))?,
+    );
     let params = b64.encode(
-        aes_encrypt(crypt_key.as_bytes(), payload.to_string().as_bytes()).expect("aes encrypt"),
+        aes_encrypt(crypt_key.as_bytes(), payload.to_string().as_bytes())
+            .map_err(|e| QmError::Other(format!("QIMEI AES encrypt failed: {e}")))?,
     );
     let extra = format!("{{\"appKey\":\"{APP_KEY}\"}}");
     let req_sign = calc_md5(&[
@@ -216,7 +223,7 @@ pub fn build_qimei_request(
             "extra": extra,
         },
     });
-    (ts, headers, request_json)
+    Ok((ts, headers, request_json))
 }
 
 /// 解析 QIMEI 响应.
@@ -228,4 +235,30 @@ pub fn parse_qimei_response(body: &str) -> Option<(String, String)> {
     let q16 = data.get("q16")?.as_str()?;
     let q36 = data.get("q36")?.as_str()?;
     Some((q16.to_string(), q36.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_qimei_request_propagates_crypto_as_result() {
+        let device = Device::random();
+        let (ts, headers, body) = build_qimei_request(&device, "14.9.0.8", "1.2.13.6")
+            .expect("crypto should succeed for a random 16-byte AES key");
+        assert!(ts > 0);
+        assert!(headers.iter().any(|(k, _)| k == "sign"));
+        assert!(body.get("qimeiParams").is_some());
+        assert!(body["qimeiParams"]["key"].as_str().unwrap().len() > 8);
+        assert!(body["qimeiParams"]["params"].as_str().unwrap().len() > 8);
+    }
+
+    #[test]
+    fn parse_qimei_response_reads_q16_q36() {
+        let body = r#"{"data":"{\"data\":{\"q16\":\"abc\",\"q36\":\"def\"}}"}"#;
+        assert_eq!(
+            parse_qimei_response(body),
+            Some(("abc".into(), "def".into()))
+        );
+    }
 }

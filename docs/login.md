@@ -111,13 +111,32 @@ let mut phone = PhoneLoginSession::new(client.login.clone(), "13800138000", fals
 phone.send_authcode().await?;
 let credential = phone.authorize("123456").await?;
 
-// 二维码登录会话 (自动轮询直到完成)
+// 二维码登录会话
 let mut session = QRCodeLoginSession::new(client.login.clone(), QRLoginType::Qq)
-    .with_timeout(300.0);                       // 可选: 设置总超时
-let qr = session.get_qrcode().await?;           // 二维码数据用于展示
-let credential = session.wait_qrcode_login().await?;
-client.set_credential(credential);
+    .try_with_timeout(300.0)?;              // 非法超时返回错误, 不会 panic
+let qr = session.get_qrcode().await?;       // 二维码数据用于展示
+
+// GUI: 逐个事件实时更新 (QQ / 微信 HTTP 轮询)
+loop {
+    let result = session.next_event().await?;
+    match result.event {
+        QRCodeLoginEvents::Scan => { /* 等待扫描 */ }
+        QRCodeLoginEvents::Conf => { /* 已扫码, 等待确认 */ }
+        QRCodeLoginEvents::Done => {
+            client.set_credential(result.credential.unwrap());
+            break;
+        }
+        QRCodeLoginEvents::Timeout | QRCodeLoginEvents::Refuse => break,
+    }
+}
+
+// 便利 API: 收集直到终端状态后一次性返回 (不是实时流)
+let mut session = QRCodeLoginSession::new(client.login.clone(), QRLoginType::Qq);
+let _events = session.iter_events().await?;
 ```
+
+手机客户端 MQTT 登录请使用 `wait_qrcode_login` / `checking_mobile_qrcode`
+（`timeout` 是整个二维码生命周期的总时限, 连接期间会按 Keep Alive 发送 ping）。
 
 ## 登录错误码
 

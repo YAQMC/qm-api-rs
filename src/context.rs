@@ -49,6 +49,41 @@ impl AndroidSession {
     }
 }
 
+/// 设备身份的不可变快照. 异步请求必须绑定**开始时**的 epoch,
+/// 而不能在响应返回后再读取“当前 epoch”(否则会把 D0 的结果标成 D1).
+#[derive(Clone)]
+pub(crate) struct DeviceSnapshot {
+    pub epoch: u64,
+    pub device: Device,
+}
+
+enum FetchOutcome<T> {
+    Ready(T),
+    Stale,
+}
+
+const MAX_DEVICE_RETRIES: u32 = 5;
+
+fn qimei_if_fresh(device: &Device) -> Option<(String, String)> {
+    if let (Some(q16), Some(q36)) = (device.qimei.as_ref(), device.qimei36.as_ref()) {
+        let fresh = device
+            .qimei_save_time
+            .map(|t| now() - t < 86_400)
+            .unwrap_or(false);
+        if fresh && !q16.is_empty() && !q36.is_empty() {
+            return Some((q16.clone(), q36.clone()));
+        }
+    }
+    None
+}
+
+fn device_replaced_error(stage: &'static str) -> QmError {
+    QmError::Protocol {
+        stage,
+        message: "device replaced during in-flight request".into(),
+    }
+}
+
 /// 请求上下文: 持有 HTTP 客户端、平台、版本策略、凭证与设备状态.
 ///
 /// `Device` 是设备指纹 (QIMEI 等) 的**唯一状态源**; session 是账号运行态,
@@ -150,13 +185,30 @@ impl ApiContext {
             .clone()
     }
 
+    /// 读取设备身份快照 (device + epoch 在同一把锁下一致).
+    pub(crate) fn device_snapshot(&self) -> DeviceSnapshot {
+        let guard = self.device.lock().unwrap_or_else(|e| e.into_inner());
+        let epoch = self.device_epoch.load(Ordering::Acquire);
+        DeviceSnapshot {
+            epoch,
+            device: guard.clone(),
+        }
+    }
+
+    fn current_epoch(&self) -> u64 {
+        self.device_epoch.load(Ordering::Acquire)
+    }
+
     /// 替换设备 (例如从持久化文件加载).
     ///
-    /// 更换设备身份会让此前申请的 Android session 失效 (通过 device epoch
-    /// 使缓存全部过期, 下次请求按需重新申请).
+    /// 更换设备身份会:
+    /// - 递增 device epoch, 使既有 Android session 缓存全部失效;
+    /// - 使用调用方传入的新 `Device` (不会把旧 Device 的 QIMEI 拷到新 Device);
+    /// - 与 epoch 绑定的 in-flight QIMEI / Session 结果不得再写回新 Device.
     pub fn set_device(&self, device: Device) {
-        *self.device.lock().unwrap() = device;
-        self.device_epoch.fetch_add(1, Ordering::Relaxed);
+        let mut guard = self.device.lock().unwrap();
+        *guard = device;
+        self.device_epoch.fetch_add(1, Ordering::Release);
     }
 
     /// 使指定账号的 Android session 失效 (登出/凭证刷新后调用).
@@ -196,8 +248,8 @@ impl ApiContext {
                 "session_for 仅适用于 Android 平台".into(),
             ));
         }
-        let epoch = self.device_epoch.load(std::sync::atomic::Ordering::Relaxed);
         {
+            let epoch = self.current_epoch();
             let sessions = self.sessions.lock().await;
             if let Some(s) = sessions.get(&credential.musicid) {
                 if s.valid(epoch) {
@@ -206,28 +258,48 @@ impl ApiContext {
             }
         }
         let _guard = self.state_lock.lock().await;
-        {
-            let sessions = self.sessions.lock().await;
-            if let Some(s) = sessions.get(&credential.musicid) {
-                if s.valid(epoch) {
-                    return Ok(Arc::new(s.clone()));
+        for _ in 0..MAX_DEVICE_RETRIES {
+            let snapshot = self.device_snapshot();
+            {
+                let sessions = self.sessions.lock().await;
+                if let Some(s) = sessions.get(&credential.musicid) {
+                    if s.valid(snapshot.epoch) {
+                        return Ok(Arc::new(s.clone()));
+                    }
                 }
             }
+            match self.fetch_session(credential, &snapshot).await? {
+                FetchOutcome::Ready(session) => {
+                    if self.current_epoch() != snapshot.epoch {
+                        continue;
+                    }
+                    let mut sessions = self.sessions.lock().await;
+                    sessions.insert(credential.musicid, session.clone());
+                    return Ok(Arc::new(session));
+                }
+                FetchOutcome::Stale => continue,
+            }
         }
-        let session = self.fetch_session(credential).await?;
-        let mut sessions = self.sessions.lock().await;
-        sessions.insert(credential.musicid, session.clone());
-        Ok(Arc::new(session))
+        Err(device_replaced_error("android-session"))
     }
 
     /// 向服务器申请新 session (调用方须已持有 `state_lock`).
-    async fn fetch_session(&self, credential: &Credential) -> Result<AndroidSession> {
-        let device = self.device();
-        let qimei = self.qimei_locked().await?;
+    ///
+    /// Session 绑定 **请求开始时** 的 `snapshot.epoch`, 而不是响应返回时的当前 epoch.
+    /// 若等待期间 Device 被替换, 丢弃结果且不写入缓存.
+    async fn fetch_session(
+        &self,
+        credential: &Credential,
+        snapshot: &DeviceSnapshot,
+    ) -> Result<FetchOutcome<AndroidSession>> {
+        let qimei = match self.qimei_for_snapshot(snapshot).await? {
+            FetchOutcome::Ready(q) => q,
+            FetchOutcome::Stale => return Ok(FetchOutcome::Stale),
+        };
         let comm = self.version_policy.build_comm(
             Platform::Android,
             credential,
-            &device,
+            &snapshot.device,
             qimei.as_ref(),
             None,
         );
@@ -243,7 +315,9 @@ impl ApiContext {
                 },
             },
         });
-        let user_agent = self.get_user_agent(Platform::Android);
+        let user_agent = self
+            .version_policy
+            .get_user_agent(Platform::Android, &snapshot.device);
         let resp = self
             .http
             .post(format!("{}/musicu.fcg", self.cgi_base_url))
@@ -263,46 +337,84 @@ impl ApiContext {
         if uid.is_empty() || sid.is_empty() {
             return Err(QmError::ApiData("获取 session 失败".into()));
         }
-        Ok(AndroidSession {
+        if self.current_epoch() != snapshot.epoch {
+            return Ok(FetchOutcome::Stale);
+        }
+        Ok(FetchOutcome::Ready(AndroidSession {
             uid,
             sid,
             acquired_at: now(),
-            device_epoch: self.device_epoch.load(std::sync::atomic::Ordering::Relaxed),
-        })
+            device_epoch: snapshot.epoch,
+        }))
     }
 
     /// 从 Device 读取未过期的 QIMEI 缓存 (不申请锁).
     fn qimei_from_cache(&self) -> Option<(String, String)> {
-        let device = self.device();
-        if let (Some(q16), Some(q36)) = (device.qimei.as_ref(), device.qimei36.as_ref()) {
-            let fresh = device
-                .qimei_save_time
-                .map(|t| now() - t < 86_400)
-                .unwrap_or(false);
-            if fresh && !q16.is_empty() && !q36.is_empty() {
-                return Some((q16.clone(), q36.clone()));
-            }
-        }
-        None
+        qimei_if_fresh(&self.device())
     }
 
     /// 获取缓存的 QIMEI, 过期时重新申请.
     ///
     /// 从 `Device` 读取缓存 (过期时间 24 小时); 重新申请成功后写回 `Device`.
     /// 并发 stale 请求通过 singleflight 只触发一次申请.
+    /// 若申请期间 Device 被替换, 丢弃旧结果, 有界重试新 Device.
     pub async fn get_cached_qimei(&self) -> Result<Option<(String, String)>> {
         if let Some(q) = self.qimei_from_cache() {
             return Ok(Some(q));
         }
         let _guard = self.state_lock.lock().await;
-        self.qimei_locked().await
+        for _ in 0..MAX_DEVICE_RETRIES {
+            if let Some(q) = self.qimei_from_cache() {
+                return Ok(Some(q));
+            }
+            let snapshot = self.device_snapshot();
+            match self.qimei_for_snapshot(&snapshot).await? {
+                FetchOutcome::Ready(q) => return Ok(q),
+                FetchOutcome::Stale => continue,
+            }
+        }
+        Err(device_replaced_error("qimei"))
     }
 
-    /// 申请 QIMEI 的完整流程 (调用方须已持有 `state_lock`).
-    async fn qimei_locked(&self) -> Result<Option<(String, String)>> {
-        if let Some(q) = self.qimei_from_cache() {
-            return Ok(Some(q));
+    /// 为指定 Device 快照申请 QIMEI; epoch 变化时不写回当前 Device.
+    async fn qimei_for_snapshot(
+        &self,
+        snapshot: &DeviceSnapshot,
+    ) -> Result<FetchOutcome<Option<(String, String)>>> {
+        if let Some(q) = qimei_if_fresh(&snapshot.device) {
+            return Ok(FetchOutcome::Ready(Some(q)));
         }
+        if self.current_epoch() != snapshot.epoch {
+            return Ok(FetchOutcome::Stale);
+        }
+        if let Some(q) = self.qimei_from_cache() {
+            return Ok(FetchOutcome::Ready(Some(q)));
+        }
+        let fetched = self.fetch_qimei_http(&snapshot.device).await?;
+        if self.current_epoch() != snapshot.epoch {
+            return Ok(FetchOutcome::Stale);
+        }
+        if let Some(q) = fetched {
+            if !self.commit_qimei(snapshot, &q.0, &q.1) {
+                return Ok(FetchOutcome::Stale);
+            }
+            return Ok(FetchOutcome::Ready(Some(q)));
+        }
+        Ok(FetchOutcome::Ready(None))
+    }
+
+    fn commit_qimei(&self, snapshot: &DeviceSnapshot, q16: &str, q36: &str) -> bool {
+        let mut guard = self.device.lock().unwrap();
+        if self.device_epoch.load(Ordering::Acquire) != snapshot.epoch {
+            return false;
+        }
+        guard.qimei = Some(q16.to_string());
+        guard.qimei36 = Some(q36.to_string());
+        guard.qimei_save_time = Some(now());
+        true
+    }
+
+    async fn fetch_qimei_http(&self, device: &Device) -> Result<Option<(String, String)>> {
         let profile = self.version_policy.get_profile(Platform::Android);
         let app_version = profile
             .qimei_app_version
@@ -313,8 +425,7 @@ impl ApiContext {
             .clone()
             .unwrap_or_else(|| "1.2.13.6".into());
 
-        let device = self.device();
-        let (_, headers, body) = qimei::build_qimei_request(&device, &app_version, &sdk_version);
+        let (_, headers, body) = qimei::build_qimei_request(device, &app_version, &sdk_version)?;
         let mut header_map = HeaderMap::new();
         for (k, v) in headers {
             if let Ok(v) = HeaderValue::from_str(&v) {
@@ -332,15 +443,7 @@ impl ApiContext {
             .await
             .map_err(QmError::from)?;
         let text = resp.text().await?;
-        if let Some(q) = qimei::parse_qimei_response(&text) {
-            // 写回 Device (单一状态源), 使 save_device 能持久化 QIMEI.
-            let mut device = self.device.lock().unwrap();
-            device.qimei = Some(q.0.clone());
-            device.qimei36 = Some(q.1.clone());
-            device.qimei_save_time = Some(now());
-            return Ok(Some(q));
-        }
-        Ok(None)
+        Ok(qimei::parse_qimei_response(&text))
     }
 
     /// 为 HTTP 请求准备 kwargs (注入 Cookies 与 User-Agent).
@@ -381,58 +484,87 @@ impl ApiContext {
         sign: bool,
     ) -> Result<(String, Value, Vec<(String, String)>, String)> {
         let target_platform = platform.unwrap_or(self.platform);
-        // 先确定本次请求生效的账号, 并取得与该账号原子一致的 session 快照.
-        let cred = credential.cloned().unwrap_or_else(|| self.credential());
-        let android_session = if target_platform == Platform::Android {
-            Some(self.session_for(target_platform, &cred).await?)
-        } else {
-            None
-        };
+        for _ in 0..MAX_DEVICE_RETRIES {
+            let snap = self.device_snapshot();
+            // 先确定本次请求生效的账号, 并取得与该账号原子一致的 session 快照.
+            let cred = credential.cloned().unwrap_or_else(|| self.credential());
+            let android_session = if target_platform == Platform::Android {
+                Some(self.session_for(target_platform, &cred).await?)
+            } else {
+                None
+            };
 
-        let device = self.device();
+            if let Some(ref s) = android_session {
+                if s.device_epoch != self.current_epoch() {
+                    continue;
+                }
+            }
+            if self.current_epoch() != snap.epoch {
+                continue;
+            }
 
-        let final_comm = if override_comm {
-            comm.clone().unwrap_or_else(|| json!({}))
-        } else {
             let qimei = if target_platform == Platform::Android {
                 self.get_cached_qimei().await?
             } else {
                 None
             };
-            let mut base = self.version_policy.build_comm(
-                target_platform,
-                &cred,
-                &device,
-                qimei.as_ref(),
-                android_session.as_deref(),
-            );
-            if let Some(Value::Object(map)) = comm {
-                for (k, v) in map {
-                    base[k] = v;
+
+            let epoch = self.current_epoch();
+            if epoch != snap.epoch {
+                continue;
+            }
+            if let Some(ref s) = android_session {
+                if s.device_epoch != epoch {
+                    continue;
                 }
             }
-            base
-        };
 
-        let mut payload = json!({ "comm": final_comm });
-        for (idx, req) in data.iter().enumerate() {
-            payload[format!("req_{idx}")] = req.clone();
+            let device = self.device();
+            if self.current_epoch() != epoch {
+                continue;
+            }
+            // 优先使用当前 Device 上已提交的 QIMEI, 保证与 aid 等同属一个 snapshot.
+            let qimei = qimei_if_fresh(&device).or(qimei);
+
+            let final_comm = if override_comm {
+                comm.clone().unwrap_or_else(|| json!({}))
+            } else {
+                let mut base = self.version_policy.build_comm(
+                    target_platform,
+                    &cred,
+                    &device,
+                    qimei.as_ref(),
+                    android_session.as_deref(),
+                );
+                if let Some(Value::Object(map)) = comm.clone() {
+                    for (k, v) in map {
+                        base[k] = v;
+                    }
+                }
+                base
+            };
+
+            let mut payload = json!({ "comm": final_comm });
+            for (idx, req) in data.iter().enumerate() {
+                payload[format!("req_{idx}")] = req.clone();
+            }
+
+            let mut params = Vec::new();
+            if sign {
+                params.push(("_".to_string(), format!("{}", now() * 1000)));
+                let sign_value = zzc_sign(payload.to_string().as_bytes());
+                params.push(("sign".to_string(), sign_value));
+            }
+
+            let url = if sign {
+                format!("{}/musics.fcg", self.cgi_base_url)
+            } else {
+                format!("{}/musicu.fcg", self.cgi_base_url)
+            };
+            let user_agent = self.version_policy.get_user_agent(target_platform, &device);
+            return Ok((url.to_string(), payload, params, user_agent));
         }
-
-        let mut params = Vec::new();
-        if sign {
-            params.push(("_".to_string(), format!("{}", now() * 1000)));
-            let sign_value = zzc_sign(payload.to_string().as_bytes());
-            params.push(("sign".to_string(), sign_value));
-        }
-
-        let url = if sign {
-            format!("{}/musics.fcg", self.cgi_base_url)
-        } else {
-            format!("{}/musicu.fcg", self.cgi_base_url)
-        };
-        let user_agent = self.get_user_agent(target_platform);
-        Ok((url.to_string(), payload, params, user_agent))
+        Err(device_replaced_error("build-api-kwargs"))
     }
 
     /// 执行一个 CGI 请求, 返回固定形状的响应 `CgiReply { code, data }`.
@@ -1084,5 +1216,249 @@ mod tests {
         let s2 = ctx.session_for(Platform::Android, &cred).await.unwrap();
         assert_eq!(s2.uid, "u1"); // mock 恒定返回, 但确实重新申请 (epoch 已变).
         assert_ne!(s1.device_epoch, s2.device_epoch);
+    }
+
+    fn seed_qimei(ctx: &ApiContext, q16: &str, q36: &str) {
+        let mut device = ctx.device();
+        device.qimei = Some(q16.into());
+        device.qimei36 = Some(q36.into());
+        device.qimei_save_time = Some(now());
+        ctx.set_device(device);
+    }
+
+    async fn spawn_dual(
+        cgi: axum::routing::MethodRouter,
+        qimei: axum::routing::MethodRouter,
+    ) -> String {
+        use axum::Router;
+        let app = Router::new()
+            .route("/cgi-bin/musicu.fcg", cgi)
+            .route("/tme/trpc/proxy", qimei);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        format!("http://{addr}")
+    }
+
+    /// Test A: D0 QIMEI 已发出 → set_device(D1) → 释放 D0 响应 → D0 QIMEI 不得写入 D1.
+    #[tokio::test]
+    async fn stale_qimei_is_not_committed_after_set_device() {
+        use axum::routing::post;
+        use std::sync::atomic::{AtomicU32, Ordering as AOrd};
+        use std::sync::Arc;
+        use tokio::sync::Barrier;
+
+        let gate = Arc::new(Barrier::new(2));
+        let hits = Arc::new(AtomicU32::new(0));
+        let qimei = {
+            let gate = gate.clone();
+            let hits = hits.clone();
+            post(move || {
+                let gate = gate.clone();
+                let hits = hits.clone();
+                async move {
+                    let n = hits.fetch_add(1, AOrd::SeqCst);
+                    if n == 0 {
+                        gate.wait().await;
+                        gate.wait().await;
+                        r#"{"data":"{\"data\":{\"q16\":\"q16-d0\",\"q36\":\"q36-d0\"}}"}"#
+                    } else {
+                        r#"{"data":"{\"data\":{\"q16\":\"q16-d1\",\"q36\":\"q36-d1\"}}"}"#
+                    }
+                }
+            })
+        };
+        let cgi = post(|| async {
+            r#"{"code":0,"req_0":{"code":0,"data":{"session":{"uid":"u1","sid":"s1"}}}}"#
+        });
+        let base = spawn_dual(cgi, qimei).await;
+
+        let ctx = Arc::new({
+            let mut ctx = ApiContext::new_with_proxy(None, Some(Platform::Android), None).unwrap();
+            ctx.cgi_base_url = format!("{base}/cgi-bin");
+            ctx.qimei_url = format!("{base}/tme/trpc/proxy");
+            let mut d0 = ctx.device();
+            d0.android_id = "aid-d0".into();
+            d0.qimei = None;
+            d0.qimei36 = None;
+            d0.qimei_save_time = None;
+            ctx.set_device(d0);
+            ctx
+        });
+
+        let task = {
+            let ctx = ctx.clone();
+            tokio::spawn(async move { ctx.get_cached_qimei().await })
+        };
+        gate.wait().await;
+        let mut d1 = Device::random();
+        d1.android_id = "aid-d1".into();
+        d1.qimei = None;
+        d1.qimei36 = None;
+        d1.qimei_save_time = None;
+        ctx.set_device(d1);
+        gate.wait().await;
+
+        let got = task.await.unwrap().unwrap();
+        assert_eq!(got, Some(("q16-d1".into(), "q36-d1".into())));
+        assert_eq!(ctx.qimei(), Some(("q16-d1".into(), "q36-d1".into())));
+        assert_ne!(ctx.qimei(), Some(("q16-d0".into(), "q36-d0".into())));
+        assert_eq!(ctx.device().android_id, "aid-d1");
+        assert!(
+            hits.load(AOrd::SeqCst) >= 2,
+            "stale result must trigger retry"
+        );
+    }
+
+    /// Test B: GetSession(D0) in-flight → set_device(D1) → 旧 session 不得缓存为 D1.
+    #[tokio::test]
+    async fn stale_session_is_not_cached_for_new_device() {
+        use axum::routing::post;
+        use std::sync::atomic::{AtomicU32, Ordering as AOrd};
+        use std::sync::Arc;
+        use tokio::sync::Barrier;
+
+        let gate = Arc::new(Barrier::new(2));
+        let hits = Arc::new(AtomicU32::new(0));
+        let cgi = {
+            let gate = gate.clone();
+            let hits = hits.clone();
+            post(move || {
+                let gate = gate.clone();
+                let hits = hits.clone();
+                async move {
+                    let n = hits.fetch_add(1, AOrd::SeqCst);
+                    if n == 0 {
+                        gate.wait().await;
+                        gate.wait().await;
+                        r#"{"code":0,"req_0":{"code":0,"data":{"session":{"uid":"u-d0","sid":"s-d0"}}}}"#
+                    } else {
+                        r#"{"code":0,"req_0":{"code":0,"data":{"session":{"uid":"u-d1","sid":"s-d1"}}}}"#
+                    }
+                }
+            })
+        };
+        let qimei = post(|| async { r#"{"data":"{\"data\":{\"q16\":\"q16\",\"q36\":\"q36\"}}"}"# });
+        let base = spawn_dual(cgi, qimei).await;
+
+        let ctx = Arc::new({
+            let mut ctx = ApiContext::new_with_proxy(None, Some(Platform::Android), None).unwrap();
+            ctx.cgi_base_url = format!("{base}/cgi-bin");
+            ctx.qimei_url = format!("{base}/tme/trpc/proxy");
+            seed_qimei(&ctx, "q16-d0", "q36-d0");
+            ctx
+        });
+        let epoch_d0 = ctx.current_epoch();
+
+        let mut cred = Credential::default();
+        cred.musicid = 9;
+        cred.str_musicid = "9".into();
+
+        let task = {
+            let ctx = ctx.clone();
+            let cred = cred.clone();
+            tokio::spawn(async move { ctx.session_for(Platform::Android, &cred).await })
+        };
+        gate.wait().await;
+        let mut d1 = Device::random();
+        d1.android_id = "aid-d1".into();
+        d1.qimei = Some("q16-d1".into());
+        d1.qimei36 = Some("q36-d1".into());
+        d1.qimei_save_time = Some(now());
+        ctx.set_device(d1);
+        let epoch_d1 = ctx.current_epoch();
+        assert_ne!(epoch_d0, epoch_d1);
+        gate.wait().await;
+
+        let session = task.await.unwrap().unwrap();
+        assert_eq!(session.uid, "u-d1");
+        assert_eq!(session.device_epoch, epoch_d1);
+        assert_ne!(session.device_epoch, epoch_d0);
+        assert!(hits.load(AOrd::SeqCst) >= 2);
+    }
+
+    /// Test C: Device 在 build_api_kwargs 期间被替换 → 最终 comm 必须是同一 snapshot.
+    #[tokio::test]
+    async fn build_api_kwargs_retries_for_coherent_device_snapshot() {
+        use axum::routing::post;
+        use std::sync::atomic::{AtomicU32, Ordering as AOrd};
+        use std::sync::Arc;
+        use tokio::sync::Barrier;
+
+        let gate = Arc::new(Barrier::new(2));
+        let hits = Arc::new(AtomicU32::new(0));
+        let cgi = {
+            let gate = gate.clone();
+            let hits = hits.clone();
+            post(move || {
+                let gate = gate.clone();
+                let hits = hits.clone();
+                async move {
+                    let n = hits.fetch_add(1, AOrd::SeqCst);
+                    if n == 0 {
+                        gate.wait().await;
+                        gate.wait().await;
+                        r#"{"code":0,"req_0":{"code":0,"data":{"session":{"uid":"u-d0","sid":"s-d0"}}}}"#
+                    } else {
+                        r#"{"code":0,"req_0":{"code":0,"data":{"session":{"uid":"u-d1","sid":"s-d1"}}}}"#
+                    }
+                }
+            })
+        };
+        let qimei = post(|| async { r#"{"data":"{\"data\":{\"q16\":\"x\",\"q36\":\"y\"}}"}"# });
+        let base = spawn_dual(cgi, qimei).await;
+
+        let ctx = Arc::new({
+            let mut ctx = ApiContext::new_with_proxy(None, Some(Platform::Android), None).unwrap();
+            ctx.cgi_base_url = format!("{base}/cgi-bin");
+            ctx.qimei_url = format!("{base}/tme/trpc/proxy");
+            let mut d0 = ctx.device();
+            d0.android_id = "aid-d0".into();
+            d0.qimei = Some("q16-d0".into());
+            d0.qimei36 = Some("q36-d0".into());
+            d0.qimei_save_time = Some(now());
+            ctx.set_device(d0);
+            ctx
+        });
+
+        let mut cred = Credential::default();
+        cred.musicid = 11;
+        cred.str_musicid = "11".into();
+
+        let task = {
+            let ctx = ctx.clone();
+            let cred = cred.clone();
+            tokio::spawn(async move {
+                ctx.build_api_kwargs(
+                    &[json!({"module": "music.test", "method": "Ping", "param": {}})],
+                    None,
+                    Some(&cred),
+                    Some(Platform::Android),
+                    false,
+                    false,
+                )
+                .await
+            })
+        };
+        gate.wait().await;
+        let mut d1 = Device::random();
+        d1.android_id = "aid-d1".into();
+        d1.qimei = Some("q16-d1".into());
+        d1.qimei36 = Some("q36-d1".into());
+        d1.qimei_save_time = Some(now());
+        ctx.set_device(d1);
+        gate.wait().await;
+
+        let (_url, payload, _params, _ua) = task.await.unwrap().unwrap();
+        let comm = &payload["comm"];
+        assert_eq!(comm["aid"], "aid-d1");
+        assert_eq!(comm["QIMEI"], "q16-d1");
+        assert_eq!(comm["QIMEI36"], "q36-d1");
+        assert_eq!(comm["uid"], "u-d1");
+        assert_ne!(comm["aid"], "aid-d0");
+        assert_ne!(comm["QIMEI"], "q16-d0");
+        assert_ne!(comm["uid"], "u-d0");
     }
 }

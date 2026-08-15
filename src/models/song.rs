@@ -15,7 +15,7 @@ pub struct QuerySongResponse {
 }
 
 /// 单个文件授权结果.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Clone, Deserialize, Default)]
 pub struct UrlinfoItem {
     #[serde(rename = "songmid")]
     pub mid: String,
@@ -24,6 +24,27 @@ pub struct UrlinfoItem {
     pub vkey: String,
     pub ekey: String,
     pub result: i64,
+}
+
+impl std::fmt::Debug for UrlinfoItem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UrlinfoItem")
+            .field("mid", &self.mid)
+            .field("filename", &self.filename)
+            .field("purl", &redact_media(&self.purl))
+            .field("vkey", &redact_media(&self.vkey))
+            .field("ekey", &redact_media(&self.ekey))
+            .field("result", &self.result)
+            .finish()
+    }
+}
+
+fn redact_media(s: &str) -> &'static str {
+    if s.is_empty() {
+        ""
+    } else {
+        "[redacted]"
+    }
 }
 
 /// 歌曲播放地址响应.

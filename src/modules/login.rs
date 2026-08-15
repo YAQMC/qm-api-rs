@@ -444,16 +444,20 @@ impl LoginApi {
     /// 持续接收服务端推送的登录状态事件. 到达终端事件
     /// (DONE / REFUSE / TIMEOUT) 时停止.
     ///
+    /// `timeout` 是**整个二维码生命周期**的总时限, 不会因为中间收到非终止
+    /// 消息而重新计时. 连接期间按 MQTT Keep Alive (含服务端 override) 发送 PINGREQ.
+    ///
     /// Args:
     ///     qrcode: 由 `get_qrcode(QRLoginType::Mobile)` 获取的二维码对象.
-    ///     timeout: 单次消息等待超时; 超时产出 `TIMEOUT` 事件后结束.
+    ///     timeout: 整体登录超时; 超时产出 `TIMEOUT` 事件后结束.
     pub async fn checking_mobile_qrcode(
         &self,
         qrcode: &QR,
         timeout: std::time::Duration,
     ) -> Result<Vec<QRLoginResult>> {
-        use crate::mqtt::{MqttClient, MqttProperties};
+        use crate::mqtt::{keep_alive_interval, MqttClient, MqttProperties};
         use rand::Rng;
+        use std::time::Instant;
 
         let qrcode_id = qrcode.identifier.clone();
         let now_ms = now_ms();
@@ -502,38 +506,106 @@ impl LoginApi {
             credential: None,
         }];
 
+        let deadline = Instant::now() + timeout;
+        let ping_period = keep_alive_interval(client.keep_alive);
+        let mut ping = match ping_period {
+            Some(period) => {
+                let mut iv = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
+                iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                Some(iv)
+            }
+            None => None,
+        };
+
         loop {
-            match tokio::time::timeout(timeout, client.next_message()).await {
-                Ok(Ok(message)) => {
-                    let message_type = message.properties.get("type").cloned();
-                    let payload = message.json();
-                    let item = self
-                        .handle_mobile_message(&qrcode_id, message_type.as_deref(), payload)
-                        .await?;
-                    if let Some(item) = item {
-                        let terminal = matches!(
-                            item.event,
-                            QRCodeLoginEvents::Done
-                                | QRCodeLoginEvents::Refuse
-                                | QRCodeLoginEvents::Timeout
-                        );
-                        events.push(item);
-                        if terminal {
-                            break;
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                events.push(QRLoginResult {
+                    event: QRCodeLoginEvents::Timeout,
+                    credential: None,
+                });
+                break;
+            }
+
+            let timed_out = if let Some(iv) = ping.as_mut() {
+                tokio::select! {
+                    biased;
+                    _ = tokio::time::sleep(remaining) => true,
+                    msg = client.next_message() => {
+                        match msg {
+                            Ok(message) => {
+                                if self
+                                    .ingest_mobile_mqtt(&qrcode_id, message, &mut events)
+                                    .await?
+                                {
+                                    break;
+                                }
+                            }
+                            Err(e) => return Err(e),
                         }
+                        false
+                    }
+                    _ = iv.tick() => {
+                        if let Err(e) = client.ping().await {
+                            if !e.is_retryable() {
+                                return Err(e);
+                            }
+                        }
+                        false
                     }
                 }
-                Ok(Err(e)) => return Err(e),
-                Err(_) => {
-                    events.push(QRLoginResult {
-                        event: QRCodeLoginEvents::Timeout,
-                        credential: None,
-                    });
-                    break;
+            } else {
+                tokio::select! {
+                    biased;
+                    _ = tokio::time::sleep(remaining) => true,
+                    msg = client.next_message() => {
+                        match msg {
+                            Ok(message) => {
+                                if self
+                                    .ingest_mobile_mqtt(&qrcode_id, message, &mut events)
+                                    .await?
+                                {
+                                    break;
+                                }
+                            }
+                            Err(e) => return Err(e),
+                        }
+                        false
+                    }
                 }
+            };
+            if timed_out {
+                events.push(QRLoginResult {
+                    event: QRCodeLoginEvents::Timeout,
+                    credential: None,
+                });
+                break;
             }
         }
         Ok(events)
+    }
+
+    /// 消化一条 MQTT 推送. 返回 `true` 表示已到达终端事件.
+    async fn ingest_mobile_mqtt(
+        &self,
+        qrcode_id: &str,
+        message: crate::mqtt::MqttMessage,
+        events: &mut Vec<QRLoginResult>,
+    ) -> Result<bool> {
+        let message_type = message.properties.get("type").cloned();
+        let payload = message.json();
+        let item = self
+            .handle_mobile_message(qrcode_id, message_type.as_deref(), payload)
+            .await?;
+        if let Some(item) = item {
+            let terminal = matches!(
+                item.event,
+                QRCodeLoginEvents::Done | QRCodeLoginEvents::Refuse | QRCodeLoginEvents::Timeout
+            );
+            events.push(item);
+            return Ok(terminal);
+        }
+        Ok(false)
     }
 
     /// 处理手机客户端登录事件消息.
