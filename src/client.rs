@@ -1,0 +1,246 @@
+//! API 客户端核心实现 (对应 Python 端 `core/client.py`).
+
+use serde::de::DeserializeOwned;
+use serde_json::Value;
+use std::sync::Arc;
+
+use crate::context::ApiContext;
+use crate::error::{QmError, Result};
+use crate::modules::*;
+use crate::versioning::Platform;
+use crate::Credential;
+
+/// CGI 请求选项.
+#[derive(Debug, Clone)]
+pub struct CgiOptions {
+    /// 自定义公共参数 (与默认 comm 合并).
+    pub comm: Option<Value>,
+    /// 是否完全覆盖默认公共参数.
+    pub override_comm: bool,
+    /// 是否保留布尔值 (为 false 时转换为 0/1).
+    pub preserve_bool: bool,
+    /// 允许的错误码集合 (不抛异常).
+    pub allow_error_codes: Option<Vec<i64>>,
+    /// 当响应包含允许的错误码时, 是否仍尝试解析响应数据.
+    pub parse_on_allow: bool,
+    /// 请求凭证 (优先于客户端全局凭证).
+    pub credential: Option<Credential>,
+    /// 请求平台 (优先于客户端全局平台).
+    pub platform: Option<Platform>,
+    /// 是否需要签名 (走 `musics.fcg`).
+    pub sign: bool,
+    /// 是否需要登录.
+    pub require_login: bool,
+}
+
+impl Default for CgiOptions {
+    fn default() -> Self {
+        CgiOptions {
+            comm: None,
+            override_comm: false,
+            preserve_bool: false,
+            allow_error_codes: None,
+            parse_on_allow: false,
+            credential: None,
+            platform: None,
+            sign: false,
+            require_login: false,
+        }
+    }
+}
+
+impl CgiOptions {
+    /// 构造默认选项.
+    pub fn new() -> Self {
+        CgiOptions::default()
+    }
+}
+
+impl From<&CgiOptions> for crate::context::RequestOptions {
+    fn from(o: &CgiOptions) -> Self {
+        crate::context::RequestOptions {
+            comm: o.comm.clone(),
+            override_comm: o.override_comm,
+            preserve_bool: o.preserve_bool,
+            allow_error_codes: o.allow_error_codes.clone(),
+            parse_on_allow: o.parse_on_allow,
+            credential: o.credential.clone(),
+            platform: o.platform,
+            sign: o.sign,
+            require_login: o.require_login,
+        }
+    }
+}
+
+/// HTTP 请求选项.
+#[derive(Debug, Clone, Default)]
+pub struct HttpOptions {
+    pub params: Vec<(String, String)>,
+    pub headers: reqwest::header::HeaderMap,
+    pub cookies: Vec<(String, String)>,
+    pub json: Option<Value>,
+    pub data: Option<Value>,
+    pub disable_parse: bool,
+    pub credential: Option<Credential>,
+    pub timeout: Option<std::time::Duration>,
+}
+
+/// QQMusic API 客户端.
+#[derive(Clone)]
+pub struct Client {
+    pub(crate) context: Arc<ApiContext>,
+    pub song: SongApi,
+    pub search: SearchApi,
+    pub singer: SingerApi,
+    pub album: AlbumApi,
+    pub lyric: LyricApi,
+    pub mv: MvApi,
+    pub top: TopApi,
+    pub songlist: SonglistApi,
+    pub comment: CommentApi,
+    pub recommend: RecommendApi,
+    pub user: UserApi,
+    pub login: LoginApi,
+    pub helper: HelperApi,
+    pub private_message: PrivateMessageApi,
+}
+
+impl std::fmt::Debug for Client {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Client")
+            .field("platform", &self.context.platform)
+            .finish()
+    }
+}
+
+impl Client {
+    /// 创建客户端.
+    pub fn new(credential: Option<Credential>, platform: Option<Platform>) -> Result<Self> {
+        Self::new_with_proxy(credential, platform, None)
+    }
+
+    /// 创建客户端 (可指定 HTTP 代理, 如 `"http://127.0.0.1:7890"`).
+    pub fn new_with_proxy(
+        credential: Option<Credential>,
+        platform: Option<Platform>,
+        proxy: Option<&str>,
+    ) -> Result<Self> {
+        let context = Arc::new(ApiContext::new_with_proxy(credential, platform, proxy)?);
+        Ok(Client {
+            song: SongApi::new(context.clone()),
+            search: SearchApi::new(context.clone()),
+            singer: SingerApi::new(context.clone()),
+            album: AlbumApi::new(context.clone()),
+            lyric: LyricApi::new(context.clone()),
+            mv: MvApi::new(context.clone()),
+            top: TopApi::new(context.clone()),
+            songlist: SonglistApi::new(context.clone()),
+            comment: CommentApi::new(context.clone()),
+            recommend: RecommendApi::new(context.clone()),
+            user: UserApi::new(context.clone()),
+            login: LoginApi::new(context.clone()),
+            helper: HelperApi::new(context.clone()),
+            private_message: PrivateMessageApi::new(context.clone()),
+            context,
+        })
+    }
+
+    /// 全局凭证 (只读).
+    pub fn credential(&self) -> Credential {
+        self.context.credential()
+    }
+
+    /// 设置全局凭证.
+    pub fn set_credential(&self, credential: Credential) {
+        self.context.set_credential(credential);
+    }
+
+    /// 全局默认平台.
+    pub fn platform(&self) -> Platform {
+        self.context.platform
+    }
+
+    /// 底层上下文 (用于自定义请求).
+    pub fn context(&self) -> &ApiContext {
+        &self.context
+    }
+
+    /// 将当前设备指纹 (含 QIMEI / session) 持久化到文件.
+    ///
+    /// 下次启动时调用 `load_device` 恢复, 可避免每次重新申请 QIMEI / session.
+    pub fn save_device(&self, path: &std::path::Path) -> Result<()> {
+        let device = self.context.device();
+        let bytes = serde_json::to_vec(&device).map_err(QmError::from)?;
+        std::fs::write(path, bytes).map_err(QmError::from)
+    }
+
+    /// 从文件加载设备指纹.
+    pub fn load_device(&self, path: &std::path::Path) -> Result<()> {
+        let bytes = std::fs::read(path).map_err(QmError::from)?;
+        let device: crate::Device = serde_json::from_slice(&bytes).map_err(QmError::from)?;
+        self.context.set_device(device);
+        Ok(())
+    }
+
+    /// 执行一个 CGI 请求并返回 `req_0.data` 原始值.
+    pub async fn request_cgi(&self, module: &str, method: &str, param: Value, opts: &CgiOptions) -> Result<Value> {
+        let ro: crate::context::RequestOptions = opts.into();
+        self.context.request_cgi(module, method, param, &ro).await
+    }
+
+    /// 批量执行多个 CGI 请求 (合并为一次 `req_0..req_N` 调用, 减少网络往返).
+    ///
+    /// `requests` 为 `(module, method, param)` 三元组列表; 返回与输入顺序一致的
+    /// 每个子请求的 `data`.
+    pub async fn request_cgi_batch(
+        &self,
+        requests: &[(&str, &str, Value)],
+        opts: &CgiOptions,
+    ) -> Result<Vec<Value>> {
+        let ro: crate::context::RequestOptions = opts.into();
+        self.context.request_cgi_batch(requests, &ro).await
+    }
+
+    /// 批量执行 CGI 请求并反序列化为 `Vec<T>`.
+    pub async fn cgi_batch<T: DeserializeOwned>(
+        &self,
+        requests: &[(&str, &str, Value)],
+        opts: &CgiOptions,
+    ) -> Result<Vec<T>> {
+        let data = self.request_cgi_batch(requests, opts).await?;
+        data.into_iter()
+            .map(|v| {
+                if v.is_null() {
+                    serde_json::from_value(Value::Object(Default::default())).map_err(QmError::from)
+                } else {
+                    serde_json::from_value(v).map_err(QmError::from)
+                }
+            })
+            .collect()
+    }
+
+    /// 执行一个 CGI 请求并反序列化为 `T`.
+    pub async fn cgi<T: DeserializeOwned>(&self, module: &str, method: &str, param: Value, opts: &CgiOptions) -> Result<T> {
+        let data = self.request_cgi(module, method, param, opts).await?;
+        if data.is_null() {
+            return serde_json::from_value(Value::Object(Default::default())).map_err(QmError::from);
+        }
+        serde_json::from_value(data).map_err(QmError::from)
+    }
+
+    /// 执行一个标准 HTTP 请求, 返回原始响应文本.
+    pub async fn request_http(&self, method: reqwest::Method, url: &str, opts: &HttpOptions) -> Result<String> {
+        self.context.request_http(method, url, opts).await
+    }
+
+    /// 执行 HTTP 请求并反序列化.
+    pub async fn http<T: DeserializeOwned>(&self, method: reqwest::Method, url: &str, opts: &HttpOptions) -> Result<T> {
+        let text = self.request_http(method, url, opts).await?;
+        serde_json::from_str(&text).map_err(QmError::from)
+    }
+
+    /// 下载原始字节 (用于音频文件下载).
+    pub async fn download(&self, url: &str, credential: Option<&Credential>) -> Result<Vec<u8>> {
+        self.context.request_http_bytes(url, credential).await
+    }
+}
