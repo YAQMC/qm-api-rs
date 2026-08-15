@@ -19,13 +19,14 @@ cargo build --features experimental
 
 | 接口 | 模块/方法 | 原因 |
 | --- | --- | --- |
-| `album.fav_album` | `AlbumFavWrite / FavAlbum` | 未 live 验证收藏语义 |
-| `album.del_fav_album` | `AlbumFavWrite / CancelFavAlbum` | 未 live 验证取消收藏语义 |
+| `album.fav_album` | `AlbumFavWrite / FavAlbum` | 请求参数名 (`v_albumId`) 为猜测, 未获 ASAR/live 证据 |
+| `album.del_fav_album` | `AlbumFavWrite / CancelFavAlbum` | ASAR 参数名可能并非 `v_albumId`, 语义未验证 |
 | `user.focus_singer(action: ConcernAction, mid)` | `Concern.ConcernSystemServer / cgi_concern_user_v2` | `ConcernAction` 正反值仍需要 live-test |
-| `user.fav_mv(vid, action: MvFavAction)` | `MVFavWrite / AddDelFavMV` | `MvFavAction` cmdtype 语义需要 live validation |
+| `user.fav_mv(vid, action: MvFavAction)` | `MVFavWrite / AddDelFavMV` | 请求 payload 为猜测; ASAR 证据显示含 `cmdtype` 字段, `MvFavAction` 语义未验证 |
 
 ## 如何晋升为 Stable
 
 1. 用测试账号实际调用写接口（仅当确认不会造成破坏时）。
-2. 校验请求参数、`ConcernAction`/`MvFavAction` 正反语义、响应 `code`。
+2. 依据官方 ASAR 静态证据 + live write 校验请求参数名、`ConcernAction`/
+   `MvFavAction` 正反语义、响应 `code`。
 3. 移除 `#[cfg(feature = "experimental")]` 与本文档中的对应条目。

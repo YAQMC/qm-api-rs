@@ -286,10 +286,13 @@ pub struct Qmc2Map {
 }
 
 impl Qmc2Map {
-    pub fn new(key: &[u8]) -> Self {
-        Qmc2Map {
-            key: key_compress(key),
+    pub fn new(key: &[u8]) -> Result<Self> {
+        if key.is_empty() {
+            return Err(QmError::ApiData("Qmc2Map 密钥不能为空".into()));
         }
+        Ok(Qmc2Map {
+            key: key_compress(key),
+        })
     }
 
     pub fn decrypt(&self, data: &[u8], offset: usize) -> Vec<u8> {
@@ -365,15 +368,18 @@ pub struct Qmc2Rc4 {
 }
 
 impl Qmc2Rc4 {
-    pub fn new(key: &[u8]) -> Self {
+    pub fn new(key: &[u8]) -> Result<Self> {
+        if key.is_empty() {
+            return Err(QmError::ApiData("Qmc2Rc4 密钥不能为空".into()));
+        }
         let mut rc4 = Rc4::new(key);
         let hash = qmc2_hash(key);
         let key_stream: Vec<u8> = (0..RC4_STREAM_CACHE_SIZE).map(|_| rc4.generate()).collect();
-        Qmc2Rc4 {
+        Ok(Qmc2Rc4 {
             hash,
             key: key.to_vec(),
             key_stream,
-        }
+        })
     }
 
     fn process_first_segment(&self, buf: &mut [u8], start: usize, length: usize, offset: usize) {
@@ -444,9 +450,9 @@ fn make_qmc2_cipher(master_key: &[u8]) -> Result<Qmc2Cipher> {
         return Err(QmError::ApiData("主密钥为空".into()));
     }
     if (1..=300).contains(&master_key.len()) {
-        Ok(Qmc2Cipher::Map(Qmc2Map::new(master_key)))
+        Ok(Qmc2Cipher::Map(Qmc2Map::new(master_key)?))
     } else {
-        Ok(Qmc2Cipher::Rc4(Qmc2Rc4::new(master_key)))
+        Ok(Qmc2Cipher::Rc4(Qmc2Rc4::new(master_key)?))
     }
 }
 
@@ -582,7 +588,12 @@ pub fn parse_footer(tail: &[u8]) -> Result<Option<FooterMetadata>> {
         if payload_len != 0xC0 {
             return Err(QmError::ApiData(format!("MusicEx 长度非法: 0x{payload_len:X}")));
         }
-        let inner = &payload2[payload2.len().saturating_sub(payload_len - 0x10)..];
+        // 防恶意/损坏 footer: 校验内部载荷足够长, 避免 slice 越界 panic.
+        let inner_len = payload2.len().saturating_sub(payload_len - 0x10);
+        if inner_len < 12 + 60 + 100 {
+            return Err(QmError::ApiData("MusicEx 内部载荷过短".into()));
+        }
+        let inner = &payload2[payload2.len() - inner_len..];
         let mid = read_utf16le(&inner[12..12 + 60]);
         let media_filename = read_utf16le(&inner[12 + 60..12 + 60 + 100]);
         return Ok(Some(FooterMetadata {
@@ -844,7 +855,7 @@ mod tests {
             .repeat(6)
             .repeat(10))[..325]
             .to_vec();
-        let cipher = Qmc2Map::new(&test_key);
+        let cipher = Qmc2Map::new(&test_key).unwrap();
         let ct = [
             0x00, 0x9e, 0x41, 0xc1, 0x71, 0x36, 0x00, 0x80, 0xf4, 0x00, 0x75, 0x9e, 0x36, 0x00,
             0x14, 0x8a,
@@ -904,7 +915,7 @@ mod tests {
             0x4a, 0x48, 0x20, 0x1d,
         ]
         .to_vec();
-        let cipher = Qmc2Rc4::new(&rc4_key);
+        let cipher = Qmc2Rc4::new(&rc4_key).unwrap();
         assert_eq!(cipher.decrypt(&ct, 0), vec![0u8; 256]);
     }
 
@@ -1015,5 +1026,35 @@ mod tests {
         assert_eq!(detect_audio_extension(&id3), "flac");
         let garbage: Vec<u8> = (0u8..=255).cycle().take(2048).collect();
         assert_eq!(detect_audio_extension(&garbage), "bin");
+    }
+
+    #[test]
+    fn empty_key_constructors_error_not_panic() {
+        assert!(Qmc2Map::new(&[]).is_err());
+        assert!(Qmc2Rc4::new(&[]).is_err());
+        // 非空密钥正常.
+        assert!(Qmc2Map::new(&[1, 2, 3]).is_ok());
+        assert!(Qmc2Rc4::new(&[1, 2, 3]).is_ok());
+    }
+
+    #[test]
+    fn musicex_short_inner_payload_errors_not_panic() {
+        // 构造尾部 "musicex\0", 内部载荷远短于 0xC0, 不应 panic.
+        let mut tail = vec![0u8; 4];
+        tail.extend_from_slice(&0xC0u32.to_le_bytes());
+        tail.extend_from_slice(b"musicex\x00");
+        assert!(parse_footer(&tail).is_err());
+    }
+
+    #[test]
+    fn malformed_footer_never_panics() {
+        // 各类畸形尾部: 短尾部 / 随机字节, 只允许 Ok(None)/Err, 不允许 panic.
+        for tail in [&b""[..], b"abc", b"QTag", b"\x00\x00\x00\x10QTag", b"musicex\x00", b"STag"] {
+            let _ = parse_footer(tail);
+        }
+        let garbage: Vec<u8> = (0u8..=255).cycle().take(1024).collect();
+        for chunk in garbage.chunks(17) {
+            let _ = parse_footer(chunk);
+        }
     }
 }

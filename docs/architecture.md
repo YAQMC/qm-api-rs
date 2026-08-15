@@ -10,15 +10,20 @@ Client
  │   ├─ reqwest::Client        底层 HTTP 客户端
  │   ├─ platform               默认平台
  │   ├─ version_policy         各平台版本档案 (ct/cv/UA)
+ │   ├─ cgi_base_url           CGI 基础地址 (可指向 mock 服务器)
  │   ├─ credential (Mutex)     登录凭证
- │   ├─ device (Mutex)         模拟 Android 设备
- │   ├─ qimei (Mutex)          QIMEI 指纹缓存
- │   └─ session (Mutex)        Android session 缓存
+ │   ├─ device (Mutex)         模拟 Android 设备 (QIMEI/session 唯一状态源)
+ │   ├─ state_lock (tokio)     session/QIMEI 申请的 singleflight 锁
+ │   └─ limiter                请求限流器
  └─ 各模块 (SongApi / SearchApi / ...)  均持有 Arc<ApiContext>
 ```
 
 - 模块对象只依赖 `ApiContext`，不依赖 `Client`，因此不存在引用环。
-- 所有状态（凭证、设备、QIMEI、session）都通过 `Mutex` 保护，`&self` 方法即可并发调用。
+- 所有状态（凭证、设备）通过 `Mutex` 保护，`&self` 方法即可并发调用。
+- **`Device` 是 QIMEI / Android session 的唯一状态源**：运行时获取的新值写回
+  `Device`，`Client::save_device` / `load_device` 可跨进程复用；session 还记录
+  归属账号 `session_musicid`，保证多账号下 session 不串号。
+- `state_lock` 保证多个并发 stale 请求只触发一次 session / QIMEI 申请。
 
 ## CGI 请求流程
 
@@ -99,6 +104,11 @@ QIMEI / session 都会写回 `Device`（`session_uid`/`session_sid`/
 `session_save_time`），`build_comm` 直接读取 `Device`，从而保证
 `Client::save_device` / `load_device` 能跨进程复用，且不存在
 "context 缓存一份、device 一份"的双状态源问题。
+
+Session 归属发起请求的账号：`Device.session_musicid` 记录申请时的
+`musicid`，`ensure_session` 仅在"未过期 **且** 属于同一账号"时复用缓存，
+否则重新申请——保证多账号（per-request credential）下 session 不串号。
+并发 stale 请求经 `state_lock` singleflight 只触发一次申请。
 
 ## 手机客户端二维码登录（MQTT）
 

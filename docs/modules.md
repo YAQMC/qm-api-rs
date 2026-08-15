@@ -50,6 +50,9 @@ if reply.code == 20276 { /* 需要验证码 */ }
 let client = Client::new_with_proxy(None, None, Some("http://127.0.0.1:7890"))?;
 ```
 
+> 说明：当前仅支持 HTTP 代理；未暴露 DNS resolver/resolve 配置。MQTT 手机端
+> 扫码登录使用独立的 WebSocket 连接，不经过该代理。
+
 ### 限流
 
 客户端内置令牌桶限流（默认 10 请求/秒、突发容量 50，与参考库一致），

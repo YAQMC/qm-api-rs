@@ -21,36 +21,79 @@ pub enum ErrorCategory {
     Other,
 }
 
+/// 敏感键名 (JSON 键 / form·query 键, 不含 `=`).
+const SENSITIVE_KEYS: [&str; 8] = [
+    "qm_keyst",
+    "musickey",
+    "access_token",
+    "refresh_token",
+    "refresh_key",
+    "p_skey",
+    "qrsig",
+    "uin",
+];
+
+/// 递归对 JSON 值做 key-based 脱敏: 敏感键的值替换为 `[redacted]`.
+fn redact_json_value(v: &mut serde_json::Value) {
+    match v {
+        serde_json::Value::Object(map) => {
+            for (k, val) in map.iter_mut() {
+                if SENSITIVE_KEYS.iter().any(|s| k.eq_ignore_ascii_case(s)) {
+                    *val = serde_json::Value::String("[redacted]".into());
+                } else {
+                    redact_json_value(val);
+                }
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for item in arr.iter_mut() {
+                redact_json_value(item);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// 截断长文本 (保留尾部标记).
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() > max {
+        let mut truncated: String = s.chars().take(max).collect();
+        truncated.push_str("…[truncated]");
+        truncated
+    } else {
+        s.to_string()
+    }
+}
+
 /// 敏感载荷脱敏 (供错误诊断使用, 避免完整响应带进日志).
 ///
-/// - 截断到 `max` 字符;
-/// - 掩码形如 `key=value` 中的疑似令牌字段 (`qm_keyst`, `musickey`,
-///   `access_token`, `refresh_token`, `p_skey`, `qrsig` 等).
+/// 两套策略:
+/// - JSON (对象 / 数组) → 递归 key-based 脱敏 (覆盖 `"musickey":"xxx"` 等);
+/// - 其他 (URL / form) → `key=value` 键值对脱敏 (覆盖 `qm_keyst=xxx` 等).
+///
+/// 结果统一截断到 `max` 字符.
 pub(crate) fn redact_payload(s: &str, max: usize) -> String {
-    const SENSITIVE_KEYS: [&str; 8] = [
-        "qm_keyst", "musickey", "access_token", "refresh_token", "refresh_key",
-        "p_skey", "qrsig", "uin=",
-    ];
+    if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(s) {
+        redact_json_value(&mut v);
+        return truncate(&v.to_string(), max);
+    }
+
+    // form / query 键值对脱敏.
     let mut out = s.to_string();
     for key in SENSITIVE_KEYS {
-        let key = format!("{key}=");
+        let marker = format!("{key}=");
         let mut start = 0;
-        while let Some(idx) = out[start..].find(&key) {
-            let idx = start + idx + key.len();
-            let end = out[idx..]
-                .find(|c: char| c.is_whitespace() || c == ';' || c == '&')
-                .map(|e| idx + e)
+        while let Some(idx) = out[start..].find(&marker) {
+            let val_start = start + idx + marker.len();
+            let end = out[val_start..]
+                .find(|c: char| c.is_whitespace() || c == ';' || c == '&' || c == '"')
+                .map(|e| val_start + e)
                 .unwrap_or(out.len());
-            out.replace_range(idx..end, "[redacted]");
-            start = idx;
+            out.replace_range(val_start..end, "[redacted]");
+            start = val_start;
         }
     }
-    if out.chars().count() > max {
-        let mut truncated: String = out.chars().take(max).collect();
-        truncated.push_str("…[truncated]");
-        out = truncated;
-    }
-    out
+    truncate(&out, max)
 }
 
 /// QQ 音乐 API 统一错误类型.
@@ -171,6 +214,7 @@ fn classify_cgi_code(code: i64) -> ErrorCategory {
         2000 => ErrorCategory::BadRequest,
         2001 | 104604 => ErrorCategory::RateLimit,
         1000 | 104401 | 104400 => ErrorCategory::Auth,
+        104003 => ErrorCategory::Permission,
         20261 | 20271 | 20272 | 20274 => ErrorCategory::BadRequest,
         10007 => ErrorCategory::NotFound,
         _ => ErrorCategory::Other,
@@ -202,13 +246,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn redacts_sensitive_tokens() {
+    fn redacts_form_style_tokens() {
         let payload = r#"qm_keyst=SECRETKEY&uin=123&foo=bar; musickey=SECRET2"#;
         let out = redact_payload(payload, 10_000);
         assert!(!out.contains("SECRETKEY"));
         assert!(!out.contains("SECRET2"));
+        assert!(!out.contains("uin=123"), "uin 的值必须被掩码");
+        assert!(out.contains("uin=[redacted]"));
         assert!(out.contains("foo=bar"));
-        assert!(out.contains("uin="));
+    }
+
+    #[test]
+    fn redacts_json_values_by_key() {
+        let payload = r#"{"ret":0,"musickey":"SECRET1","data":{"user":{"uin":"12345","name":"x"},"access_token":"SECRET2"}}"#;
+        let out = redact_payload(payload, 10_000);
+        assert!(!out.contains("SECRET1"));
+        assert!(!out.contains("SECRET2"));
+        assert!(!out.contains("12345"));
+        assert!(!out.contains("\"musickey\":\"SECRET1\""));
+        assert!(out.contains("name"), "非敏感字段应保留");
+        assert!(out.contains("redacted"));
     }
 
     #[test]

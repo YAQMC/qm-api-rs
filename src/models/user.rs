@@ -167,10 +167,10 @@ pub struct UserHomepageBaseInfo {
 }
 
 jsonpath_model!(UserHomepageResponse {
-    base_info: "$.Info.BaseInfo" => UserHomepageBaseInfo,
-    singer: "$.Info.Singer" => Value,
-    is_followed: "$.Info.IsFollowed" => i64,
-    tab_detail: "$.TabDetail" => Value,
+    base_info: "$.Info.BaseInfo" => strict(UserHomepageBaseInfo),
+    singer: "$.Info.Singer" => default(Value),
+    is_followed: "$.Info.IsFollowed" => default(i64),
+    tab_detail: "$.TabDetail" => default(Value),
 });
 
 /// VIP 信息响应中的会员身份明细块.

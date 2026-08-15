@@ -114,7 +114,8 @@ cargo run --example demo
 > ③ 凭证自动刷新与多账号 ✅（`CredentialStore`，可插拔安全后端，Debug 已 redaction）
 > ④ 歌词结构化解析 ✅（`lyric_parser`：LRC + QRC 逐字）
 > ⑤ 桌面端完整签名 ✅（`zzc_sign` 与参考逐字节一致，无需 chaos VM）
-> ⑥ 代理/DNS 配置 ✅（`new_with_proxy`）
+> ⑥ 代理配置 ✅（`new_with_proxy`，仅 HTTP 代理；DNS 解析器未暴露，
+> MQTT 为独立 WebSocket 连接也不走该代理）
 > ② VIP 权限 ✅（合规支持：最佳音质选择 + 下载解密 + `is_vip` 检测，权益取决于账号自身）
 > ⚠️ 未 live 验证的写接口已移到 feature `experimental`（默认关闭），见 `docs/experimental.md`。
 > ⑦ 实时推送、⑧ Web 端 OAuth 登录为长周期项。

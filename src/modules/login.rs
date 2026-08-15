@@ -96,7 +96,7 @@ impl LoginApi {
                 code,
             }),
             _ => Err(QmError::Login {
-                message: format!("登录失败: {}", data),
+                message: format!("登录失败: {}", crate::error::redact_payload(&data.to_string(), 200)),
                 code,
             }),
         }
@@ -240,19 +240,14 @@ impl LoginApi {
         opts.params = params;
 
         // 直接使用 context 的 HTTP 客户端 (共享代理/限流/cookie).
+        // 使用 reqwest `.query()` 进行 URL 编码, 避免参数含保留字符出错.
         self.base.context.limiter.acquire().await;
-        let url_full = format!("{url}?{}", {
-            opts.params
-                .iter()
-                .map(|(k, v)| format!("{k}={v}"))
-                .collect::<Vec<_>>()
-                .join("&")
-        });
         let resp = self
             .base
             .context
             .http
-            .get(&url_full)
+            .get(url)
+            .query(&opts.params)
             .headers(opts.headers)
             .send()
             .await
@@ -608,7 +603,11 @@ impl LoginApi {
             )
             .await
             .map_err(|e| match e {
-                QmError::Network(_) => QmError::Other("timeout".into()),
+                // 微信长轮询到点返回超时是正常"暂无结果"信号, 其余网络错误
+                // (DNS/连接失败等) 保持分类, 不吞成 timeout.
+                QmError::Network(msg) if msg.contains("timed out") || msg.contains("timeout") => {
+                    QmError::Other("timeout".into())
+                }
                 other => other,
             })?;
 
@@ -663,20 +662,14 @@ impl LoginApi {
         );
         opts.params = params.into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
 
-        let url_full = format!(
-            "https://ssl.ptlogin2.graph.qq.com/check_sig?{}",
-            opts.params
-                .iter()
-                .map(|(k, v)| format!("{k}={v}"))
-                .collect::<Vec<_>>()
-                .join("&")
-        );
+        // 使用 reqwest `.query()` 进行正确的 URL 编码 (ptsigx 等含保留字符).
         self.base.context.limiter.acquire().await;
         let resp = self
             .base
             .context
             .http
-            .get(&url_full)
+            .get("https://ssl.ptlogin2.graph.qq.com/check_sig")
+            .query(&opts.params)
             .headers(opts.headers)
             .send()
             .await

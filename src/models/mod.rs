@@ -20,11 +20,46 @@ pub mod user;
 pub use base::{Album, File, MV, Pay, Singer, Song, SongList};
 pub use request::Credential;
 
+/// 按提取策略反序列化 JSONPath 字段 (由 `jsonpath_model!` 内部使用).
+#[doc(hidden)]
+#[macro_export]
+macro_rules! jsonpath_extract {
+    (strict, $ty:ty, $v:expr, $p:expr) => {
+        $crate::jsonpath::extract_strict::<$ty>($v, $p).map_err(::serde::de::Error::custom)?
+    };
+    (optional, $ty:ty, $v:expr, $p:expr) => {
+        $crate::jsonpath::extract_optional::<$ty>($v, $p)
+    };
+    (default, $ty:ty, $v:expr, $p:expr) => {
+        $crate::jsonpath::extract_typed::<$ty>($v, $p)
+    };
+}
+
 /// 定义通过 JSONPath 提取字段的响应模型.
 ///
-/// 每个字段声明 `JSONPath` 表达式, 反序列化时先从原始响应中提取再转换.
+/// 每个字段声明 `JSONPath` 表达式与类型; 提取策略三选一:
+/// - `field: expr => Ty`            —— lenient, 缺失时用默认值 (仅用于明确可容忍的字段);
+/// - `field: expr => optional(Ty)`  —— 缺失时得到 `Option<Ty>`;
+/// - `field: expr => strict(Ty)`    —— 缺失/类型不符即反序列化报错 (暴露 schema drift).
 #[macro_export]
 macro_rules! jsonpath_model {
+    ($name:ident { $( $(#[$meta:meta])* $field:ident: $path:expr => $ext:ident($ty:ty) ),* $(,)? }) => {
+        #[derive(Debug, Clone, Default)]
+        #[allow(non_snake_case)]
+        pub struct $name {
+            $( $(#[$meta])* pub $field: $ty ),*
+        }
+        impl<'de> ::serde::Deserialize<'de> for $name {
+            fn deserialize<D: ::serde::Deserializer<'de>>(
+                de: D,
+            ) -> ::std::result::Result<Self, D::Error> {
+                let raw = <::serde_json::Value as ::serde::Deserialize>::deserialize(de)?;
+                Ok($name {
+                    $($field: $crate::jsonpath_extract!($ext, $ty, &raw, $path)),*
+                })
+            }
+        }
+    };
     ($name:ident { $( $(#[$meta:meta])* $field:ident: $path:expr => $ty:ty ),* $(,)? }) => {
         #[derive(Debug, Clone, Default)]
         #[allow(non_snake_case)]
@@ -37,7 +72,7 @@ macro_rules! jsonpath_model {
             ) -> ::std::result::Result<Self, D::Error> {
                 let raw = <::serde_json::Value as ::serde::Deserialize>::deserialize(de)?;
                 Ok($name {
-                    $($field: $crate::jsonpath::extract_typed::<$ty>(&raw, $path)),*
+                    $($field: $crate::jsonpath_extract!(default, $ty, &raw, $path)),*
                 })
             }
         }

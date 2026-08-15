@@ -55,8 +55,12 @@ pub struct ApiContext {
     pub version_policy: VersionPolicy,
     /// CGI 基础地址 (默认 `https://u.y.qq.com/cgi-bin`), 测试时可指向 mock 服务器.
     pub cgi_base_url: String,
+    /// QIMEI 申请地址 (默认官方接口), 测试时可指向 mock 服务器.
+    pub qimei_url: String,
     credential: Mutex<Credential>,
     device: Mutex<Device>,
+    /// 会话 / QIMEI 申请时的 singleflight 锁 (避免并发 stale 请求重复申请).
+    state_lock: tokio::sync::Mutex<()>,
     /// 请求限流器.
     pub limiter: TokenBucket,
 }
@@ -103,8 +107,10 @@ impl ApiContext {
             platform: platform.unwrap_or(Platform::Android),
             version_policy: VersionPolicy::default(),
             cgi_base_url: "https://u.y.qq.com/cgi-bin".to_string(),
+            qimei_url: "https://api.tencentmusic.com/tme/trpc/proxy".to_string(),
             credential: Mutex::new(credential.unwrap_or_default()),
             device: Mutex::new(Device::random()),
+            state_lock: tokio::sync::Mutex::new(()),
             limiter: TokenBucket::default(),
         })
     }
@@ -144,8 +150,11 @@ impl ApiContext {
         self.version_policy.get_user_agent(platform, &device)
     }
 
-    /// 确保 Android 平台会话有效, 否则申请新的 session.
-    pub async fn ensure_session(&self, platform: Platform) -> Result<()> {
+    /// 确保 Android 平台会话有效 (绑定请求账号), 否则申请新的 session.
+    ///
+    /// Session 归属于发起请求的账号 (`credential.musicid`): 若 Device 缓存的
+    /// session 属于其他账号或已过期, 会重新获取, 避免多账号下 session 串号.
+    pub async fn ensure_session(&self, platform: Platform, credential: &Credential) -> Result<()> {
         if platform != Platform::Android {
             return Ok(());
         }
@@ -156,15 +165,32 @@ impl ApiContext {
                     .session_save_time
                     .map(|t| now() - t < 86_400)
                     .unwrap_or(false);
-                if fresh && !uid.is_empty() && !sid.is_empty() {
+                let same_account = device.session_musicid == Some(credential.musicid);
+                if fresh && same_account && !uid.is_empty() && !sid.is_empty() {
                     return Ok(());
                 }
             }
         }
-        let credential = self.credential();
+        // singleflight: 避免多个并发 stale 请求同时向服务器申请.
+        let _guard = self.state_lock.lock().await;
+        {
+            let device = self.device();
+            if let (Some(uid), Some(sid)) = (device.session_uid.as_ref(), device.session_sid.as_ref()) {
+                let fresh = device
+                    .session_save_time
+                    .map(|t| now() - t < 86_400)
+                    .unwrap_or(false);
+                let same_account = device.session_musicid == Some(credential.musicid);
+                if fresh && same_account && !uid.is_empty() && !sid.is_empty() {
+                    return Ok(());
+                }
+            }
+        }
         let device = self.device();
-        let qimei = self.get_cached_qimei().await?;
-        let comm = self.version_policy.build_comm(Platform::Android, &credential, &device, qimei.as_ref());
+        let qimei = self.qimei_locked().await?;
+        let comm = self
+            .version_policy
+            .build_comm(Platform::Android, credential, &device, qimei.as_ref());
         let payload = json!({
             "comm": comm,
             "req_0": {
@@ -180,7 +206,7 @@ impl ApiContext {
         let user_agent = self.get_user_agent(Platform::Android);
         let resp = self
             .http
-            .post("https://u.y.qq.com/cgi-bin/musicu.fcg")
+            .post(format!("{}/musicu.fcg", self.cgi_base_url))
             .json(&payload)
             .header("User-Agent", user_agent)
             .send()
@@ -197,34 +223,50 @@ impl ApiContext {
         if uid.is_empty() || sid.is_empty() {
             return Err(QmError::ApiData("获取 session 失败".into()));
         }
-        // 写回 Device (单一状态源), 使 save_device 能持久化 session.
+        // 写回 Device (单一状态源) 并记录归属账号, 使 save_device 能持久化 session.
         let mut device = self.device.lock().unwrap();
         device.session_uid = Some(uid);
         device.session_sid = Some(sid);
+        device.session_musicid = Some(credential.musicid);
         device.session_save_time = Some(now());
         Ok(())
+    }
+
+    /// 从 Device 读取未过期的 QIMEI 缓存 (不申请锁).
+    fn qimei_from_cache(&self) -> Option<(String, String)> {
+        let device = self.device();
+        if let (Some(q16), Some(q36)) = (device.qimei.as_ref(), device.qimei36.as_ref()) {
+            let fresh = device
+                .qimei_save_time
+                .map(|t| now() - t < 86_400)
+                .unwrap_or(false);
+            if fresh && !q16.is_empty() && !q36.is_empty() {
+                return Some((q16.clone(), q36.clone()));
+            }
+        }
+        None
     }
 
     /// 获取缓存的 QIMEI, 过期时重新申请.
     ///
     /// 从 `Device` 读取缓存 (过期时间 24 小时); 重新申请成功后写回 `Device`.
+    /// 并发 stale 请求通过 singleflight 只触发一次申请.
     pub async fn get_cached_qimei(&self) -> Result<Option<(String, String)>> {
+        if let Some(q) = self.qimei_from_cache() {
+            return Ok(Some(q));
+        }
+        let _guard = self.state_lock.lock().await;
+        self.qimei_locked().await
+    }
+
+    /// 申请 QIMEI 的完整流程 (调用方须已持有 `state_lock`).
+    async fn qimei_locked(&self) -> Result<Option<(String, String)>> {
+        if let Some(q) = self.qimei_from_cache() {
+            return Ok(Some(q));
+        }
         let profile = self.version_policy.get_profile(Platform::Android);
         let app_version = profile.qimei_app_version.clone().unwrap_or_else(|| "14.9.0.8".into());
         let sdk_version = profile.qimei_sdk_version.clone().unwrap_or_else(|| "1.2.13.6".into());
-
-        {
-            let device = self.device();
-            if let (Some(q16), Some(q36)) = (device.qimei.as_ref(), device.qimei36.as_ref()) {
-                let fresh = device
-                    .qimei_save_time
-                    .map(|t| now() - t < 86_400)
-                    .unwrap_or(false);
-                if fresh && !q16.is_empty() && !q36.is_empty() {
-                    return Ok(Some((q16.clone(), q36.clone())));
-                }
-            }
-        }
 
         let device = self.device();
         let (_, headers, body) = qimei::build_qimei_request(&device, &app_version, &sdk_version);
@@ -238,7 +280,7 @@ impl ApiContext {
         }
         let resp = self
             .http
-            .post("https://api.tencentmusic.com/tme/trpc/proxy")
+            .post(&self.qimei_url)
             .headers(header_map)
             .json(&body)
             .send()
@@ -291,11 +333,12 @@ impl ApiContext {
         sign: bool,
     ) -> Result<(String, Value, Vec<(String, String)>, String)> {
         let target_platform = platform.unwrap_or(self.platform);
+        // 先确定本次请求生效的账号, 保证 session 归属与该账号一致.
+        let cred = credential.cloned().unwrap_or_else(|| self.credential());
         if target_platform == Platform::Android {
-            self.ensure_session(target_platform).await?;
+            self.ensure_session(target_platform, &cred).await?;
         }
 
-        let cred = credential.cloned().unwrap_or_else(|| self.credential());
         let device = self.device();
 
         let final_comm = if override_comm {
@@ -711,11 +754,49 @@ mod tests {
         let mut device = ctx.device();
         device.session_uid = Some("uid-1".into());
         device.session_sid = Some("sid-1".into());
+        device.session_musicid = Some(0);
         device.session_save_time = Some(now());
         ctx.set_device(device);
 
-        ctx.ensure_session(Platform::Android).await.unwrap();
+        let cred = Credential::default(); // musicid = 0
+        ctx.ensure_session(Platform::Android, &cred).await.unwrap();
         assert_eq!(ctx.device().session_uid.as_deref(), Some("uid-1"));
+    }
+
+    #[tokio::test]
+    async fn session_refetched_when_account_changes() {
+        use axum::routing::post;
+        // mock 服务器返回属于新账号的 session.
+        let base = spawn_mock(
+            "/cgi-bin/musicu.fcg",
+            post(|| async {
+                r#"{"code":0,"req_0":{"code":0,"data":{"session":{"uid":"new-uid","sid":"new-sid"}}}}"#
+            }),
+        )
+        .await;
+
+        let mut ctx = ApiContext::new_with_proxy(None, Some(Platform::Android), None).unwrap();
+        ctx.cgi_base_url = format!("{base}/cgi-bin");
+        let mut device = ctx.device();
+        // 预置 QIMEI 缓存, 避免 ensure_session 内部触发真实 QIMEI 网络请求.
+        device.qimei = Some("q16".into());
+        device.qimei36 = Some("q36".into());
+        device.qimei_save_time = Some(now());
+        // 缓存属于账号 111 (旧账号), 但本次请求账号为 222.
+        device.session_uid = Some("old-uid".into());
+        device.session_sid = Some("old-sid".into());
+        device.session_musicid = Some(111);
+        device.session_save_time = Some(now());
+        ctx.set_device(device);
+
+        let mut cred = Credential::default();
+        cred.musicid = 222;
+        cred.str_musicid = "222".into();
+        ctx.ensure_session(Platform::Android, &cred).await.unwrap();
+        // 必须为新账号重新申请并写回 Device.
+        let device = ctx.device();
+        assert_eq!(device.session_uid.as_deref(), Some("new-uid"));
+        assert_eq!(device.session_musicid, Some(222));
     }
 
     #[tokio::test]
@@ -736,5 +817,46 @@ mod tests {
             let q = h.await.unwrap().unwrap();
             assert_eq!(q, Some(("q16".into(), "q36".into())));
         }
+    }
+
+    #[tokio::test]
+    async fn ensure_session_singleflight_does_not_deadlock() {
+        use axum::routing::post;
+        use tokio::time::Duration;
+        // 两个 mock: session (cgi) 与 qimei, 均为空缓存 → 走完整 singleflight 路径.
+        let base = spawn_mock(
+            "/cgi-bin/musicu.fcg",
+            post(|| async {
+                r#"{"code":0,"req_0":{"code":0,"data":{"session":{"uid":"u1","sid":"s1"}}}}"#
+            }),
+        )
+        .await;
+        let qimei_body = r#"{"data":"{\"data\":{\"q16\":\"q16\",\"q36\":\"q36\"}}"}"#;
+        let base2 = spawn_mock(
+            "/tme/trpc/proxy",
+            post(move || async move { qimei_body }),
+        )
+        .await;
+
+        let mut ctx = ApiContext::new_with_proxy(None, Some(Platform::Android), None).unwrap();
+        ctx.cgi_base_url = format!("{base}/cgi-bin");
+        ctx.qimei_url = format!("{base2}/tme/trpc/proxy");
+
+        let mut cred = Credential::default();
+        cred.musicid = 7;
+        cred.str_musicid = "7".into();
+
+        // 若 ensure_session 内重复加锁会死锁, 此处 5s 超时会失败.
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            ctx.ensure_session(Platform::Android, &cred),
+        )
+        .await;
+        result.expect("ensure_session 应在超时前完成 (单飞锁不可重入)").unwrap();
+
+        let device = ctx.device();
+        assert_eq!(device.session_uid.as_deref(), Some("u1"));
+        assert_eq!(device.session_musicid, Some(7));
+        assert_eq!(device.qimei.as_deref(), Some("q16"));
     }
 }

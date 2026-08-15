@@ -149,12 +149,18 @@ fn build_subscribe(packet_id: u16, topic: &str, props: &MqttProperties) -> Vec<u
 fn read_varint(data: &[u8], pos: &mut usize) -> Option<u64> {
     let mut multiplier: u64 = 1;
     let mut value: u64 = 0;
+    let mut count = 0;
     loop {
         let byte = *data.get(*pos)?;
         *pos += 1;
+        count += 1;
         value += ((byte & 0x7F) as u64) * multiplier;
         if byte & 0x80 == 0 {
             break;
+        }
+        // MQTT 5 Variable Byte Integer 最多 4 字节 (max 268,435,455).
+        if count >= 4 {
+            return None;
         }
         multiplier *= 128;
     }
@@ -178,30 +184,37 @@ fn read_binary(data: &[u8], pos: &mut usize) -> Option<Vec<u8>> {
     Some(s.to_vec())
 }
 
-/// 跳过未知 MQTT 5.0 属性的值 (按属性注册表确定长度), 保证前向兼容.
+/// 跳过未知 MQTT 5.0 属性的值 (按 OASIS MQTT 5 属性注册表确定长度).
 ///
-/// 返回 `false` 表示缓冲不足; 成功时 `pos` 前进到属性值末尾.
+/// 返回 `false` 表示缓冲不足 / 非法; 成功时 `pos` 前进到属性值末尾.
+/// 完整注册表见 `docs.oasis-open.org/mqtt/mqtt/v5.0/os/` 表 2-2.
 fn skip_unknown_property(pid: u8, data: &[u8], pos: &mut usize) -> Option<()> {
-    let skip = match pid {
+    let skip: usize = match pid {
         // Byte (1)
-        0x00 | 0x17 | 0x19 | 0x22 | 0x23 | 0x26 | 0x27 | 0x28 => 1,
-        // Two-Byte Integer (2)
-        0x01 | 0x13 | 0x1E | 0x1F | 0x21 => 2,
-        // Four-Byte Integer (4)
-        0x02 | 0x11 | 0x12 | 0x18 | 0x25 => 4,
-        // UTF-8 String (长度前缀)
-        0x03 | 0x08 | 0x1A | 0x1B | 0x1C | 0x1D => {
+        0x01 | 0x17 | 0x19 | 0x24 | 0x25 | 0x28 | 0x29 | 0x2A => 1,
+        // Two Byte Integer (2)
+        0x13 | 0x21 | 0x22 | 0x23 => 2,
+        // Four Byte Integer (4)
+        0x02 | 0x11 | 0x18 | 0x27 => 4,
+        // UTF-8 Encoded String
+        0x03 | 0x08 | 0x12 | 0x15 | 0x1A | 0x1C | 0x1F => {
             let _ = read_string(data, pos)?;
             return Some(());
         }
-        // Binary Data (长度前缀)
+        // Binary Data
         0x09 | 0x16 => {
             let _ = read_binary(data, pos)?;
             return Some(());
         }
         // Variable Byte Integer
-        0x0B | 0x0C | 0x0D | 0x0E | 0x0F | 0x10 => {
+        0x0B => {
             let _ = read_varint(data, pos)?;
+            return Some(());
+        }
+        // UTF-8 String Pair
+        0x26 => {
+            let _ = read_string(data, pos)?;
+            let _ = read_string(data, pos)?;
             return Some(());
         }
         _ => return None,
@@ -575,9 +588,9 @@ mod tests {
 
     #[test]
     fn parse_properties_skips_unknown_and_reads_user_property() {
-        // 未知属性 0x21 (Topic Alias, 2 字节) + 用户属性 type=scanned.
+        // 未知属性 0x22 (Topic Alias Maximum, 2 字节) + 用户属性 type=scanned.
         let mut props_bytes = Vec::new();
-        props_bytes.push(0x21);
+        props_bytes.push(0x22);
         props_bytes.extend(7u16.to_be_bytes());
         props_bytes.push(property_id::USER_PROPERTY);
         props_bytes.extend(encode_string("type"));
@@ -590,6 +603,67 @@ mod tests {
         assert_eq!(props.user_property, vec![("type".to_string(), "scanned".to_string())]);
         // 未知属性已被跳过, payload 起点正确.
         assert_eq!(body.get(pos..).unwrap(), b"PAYLOAD");
+    }
+
+    #[test]
+    fn unknown_property_type_table_matches_oasis() {
+        // 逐一验证 OASIS MQTT 5 注册表中"未显式处理"属性的长度跳转.
+        let cases: &[(u8, usize)] = &[
+            // Byte (1)
+            (0x01, 1),
+            (0x17, 1),
+            (0x19, 1),
+            (0x24, 1),
+            (0x25, 1),
+            (0x28, 1),
+            (0x29, 1),
+            (0x2A, 1),
+            // Two Byte (2)
+            (0x13, 2),
+            (0x21, 2),
+            (0x22, 2),
+            (0x23, 2),
+            // Four Byte (4)
+            (0x02, 4),
+            (0x11, 4),
+            (0x18, 4),
+            (0x27, 4),
+        ];
+        for (pid, len) in cases {
+            let value = vec![0xAB; *len];
+            let mut buf = vec![*pid];
+            buf.extend(&value);
+            // parse_properties 已消费属性 ID 字节, pos 从 1 开始指向值.
+            let mut pos = 1;
+            assert!(
+                skip_unknown_property(*pid, &buf, &mut pos).is_some(),
+                "pid {pid:#x} 应可跳过"
+            );
+            assert_eq!(pos, 1 + len, "pid {pid:#x} 长度应为 {len}");
+        }
+    }
+
+    #[test]
+    fn unknown_property_requires_enough_bytes() {
+        // 缓冲不足时不得推进/panic.
+        let mut pos = 0;
+        assert!(skip_unknown_property(0x27, &[0x27, 0x00], &mut pos).is_none());
+        assert_eq!(pos, 0);
+    }
+
+    #[test]
+    fn varint_enforces_four_byte_limit() {
+        // 268,435,455 = 0xFF 0xFF 0xFF 0x7F 是合法最大值 (4 字节).
+        let max = encode_varint(268_435_455);
+        assert_eq!(max.len(), 4);
+        let mut pos = 0;
+        assert_eq!(read_varint(&max, &mut pos), Some(268_435_455));
+
+        // 超出 4 字节 (如 268_435_456) 属 malformed, 应返回 None 而非无限读取.
+        let over = encode_varint(268_435_456);
+        assert_eq!(over.len(), 5);
+        let mut pos = 0;
+        assert_eq!(read_varint(&over, &mut pos), None);
     }
 
     #[test]

@@ -87,13 +87,16 @@ impl CgiReply<Value> {
     }
 
     /// 反序列化 `data` 为 `T` (仅在 `code == 0` 时).
+    ///
+    /// `data` 为 `null` 时视为 malformed 而非成功 (不再伪装成空对象).
     pub fn into_typed<T: DeserializeOwned>(self) -> Result<T> {
         let data = self.require_success()?;
         if data.is_null() {
-            serde_json::from_value(Value::Object(Default::default())).map_err(QmError::from)
-        } else {
-            serde_json::from_value(data).map_err(QmError::from)
+            return Err(QmError::ApiData(
+                "CGI 响应成功但 data 为 null (malformed), 请检查接口协议".into(),
+            ));
         }
+        serde_json::from_value(data).map_err(QmError::from)
     }
 }
 
@@ -237,6 +240,18 @@ mod tests {
         let report = CgiReply::report(&replies);
         assert!(report.is_ok());
         assert!(report.failures.is_empty());
+    }
+
+    #[test]
+    fn null_data_is_not_success_for_typed() {
+        let reply = CgiReply::new(0, Value::Null);
+        assert!(matches!(
+            reply.into_typed::<serde_json::Value>(),
+            Err(QmError::ApiData(_))
+        ));
+        // 但 require_success() 仍允许调用方自行处理 null (如返回 Value 的透传).
+        let reply = CgiReply::new(0, Value::Null);
+        assert!(reply.require_success().unwrap().is_null());
     }
 
     fn json_lit() -> Value {
