@@ -167,10 +167,12 @@ impl SonglistApi {
     // 以下接口补充自官方桌面客户端 (Electron ASAR) `common.js`.
     // ------------------------------------------------------------------
 
-    /// 获取指定歌单下的歌曲 (官方桌面端 `PlaylistDetailRead / GetUniformSongDetailInfo`).
+    /// ⚠️ **Raw 透传** — 获取指定歌单下的歌曲
+    /// (官方桌面端 `PlaylistDetailRead / GetUniformSongDetailInfo`).
     ///
-    /// 可用于获取"我喜欢"歌单 (`dirId=201`) 的歌曲详情.
-    pub async fn get_uniform_song_detail(&self, param: Value, credential: Option<&Credential>) -> Result<Value> {
+    /// 可用于获取"我喜欢"歌单 (`dirId=201`) 的歌曲详情; 参数与响应 schema
+    /// 未经 live 验证, 仅提供透传能力.
+    pub async fn raw_get_uniform_song_detail(&self, param: Value, credential: Option<&Credential>) -> Result<Value> {
         let mut opts = RequestOptions::default();
         opts.credential = credential.cloned();
         self.base
@@ -178,8 +180,9 @@ impl SonglistApi {
             .await
     }
 
-    /// 按目录 ID 获取歌单歌曲 (官方桌面端 `PlaylistDetailRead / GetSongDetailInfoListByDirId`).
-    pub async fn get_song_detail_info_list_by_dirid(&self, param: Value, credential: Option<&Credential>) -> Result<Value> {
+    /// ⚠️ **Raw 透传** — 按目录 ID 获取歌单歌曲
+    /// (官方桌面端 `PlaylistDetailRead / GetSongDetailInfoListByDirId`).
+    pub async fn raw_get_song_detail_info_list_by_dirid(&self, param: Value, credential: Option<&Credential>) -> Result<Value> {
         let mut opts = RequestOptions::default();
         opts.credential = credential.cloned();
         self.base
@@ -187,10 +190,11 @@ impl SonglistApi {
             .await
     }
 
-    /// 检查歌单是否已收藏 (官方桌面端 `PlaylistFavRead / IsPlaylistFan`).
+    /// ⚠️ **Raw 透传** — 检查歌单是否已收藏
+    /// (官方桌面端 `PlaylistFavRead / IsPlaylistFan`).
     ///
     /// `param` 通常形如 `{"v_playlistId": [id]}`.
-    pub async fn is_playlist_fan(&self, param: Value, credential: Option<&Credential>) -> Result<Value> {
+    pub async fn raw_is_playlist_fan(&self, param: Value, credential: Option<&Credential>) -> Result<Value> {
         let mut opts = RequestOptions::default();
         opts.require_login = true;
         opts.credential = credential.cloned();
@@ -199,8 +203,9 @@ impl SonglistApi {
             .await
     }
 
-    /// 对歌单歌曲重新排序 (官方桌面端 `PlaylistDetailWrite / SeqSonglist`).
-    pub async fn seq_songlist(&self, param: Value, credential: Option<&Credential>) -> Result<bool> {
+    /// ⚠️ **Raw 透传** — 对歌单歌曲重新排序
+    /// (官方桌面端 `PlaylistDetailWrite / SeqSonglist`).
+    pub async fn raw_seq_songlist(&self, param: Value, credential: Option<&Credential>) -> Result<bool> {
         let mut opts = RequestOptions::default();
         opts.require_login = true;
         opts.credential = credential.cloned();
@@ -211,8 +216,8 @@ impl SonglistApi {
         Ok(data.get("retCode").and_then(Value::as_i64).unwrap_or(-1) == 0)
     }
 
-    /// 取消收藏长音频 (官方桌面端 `music.favor_system_write / do_favor`).
-    pub async fn cancel_fav_audio(&self, param: Value, credential: Option<&Credential>) -> Result<Value> {
+    /// ⚠️ **Raw 透传** — 取消收藏长音频 (官方桌面端 `music.favor_system_write / do_favor`).
+    pub async fn raw_cancel_fav_audio(&self, param: Value, credential: Option<&Credential>) -> Result<Value> {
         let mut opts = RequestOptions::default();
         opts.require_login = true;
         opts.credential = credential.cloned();

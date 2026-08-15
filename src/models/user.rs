@@ -387,3 +387,43 @@ pub struct DislikeListData {
     #[serde(alias = "Token")]
     pub token: String,
 }
+
+/// 不喜欢条目类型 (`music.feedback.FeedbackBlack`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DislikeIdType {
+    /// 歌曲.
+    Songs = 1,
+    /// 歌手.
+    Singers = 2,
+    /// 曲风.
+    Styles = 3,
+}
+
+impl DislikeIdType {
+    /// 对应的请求键名 (如 `Songs`).
+    pub fn as_key(self) -> &'static str {
+        match self {
+            DislikeIdType::Songs => "Songs",
+            DislikeIdType::Singers => "Singers",
+            DislikeIdType::Styles => "Styles",
+        }
+    }
+}
+
+/// 关注 / 取关动作 (`cgi_concern_user_v2` 的 `opertype`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConcernAction {
+    /// 关注.
+    Follow = 0,
+    /// 取消关注.
+    Unfollow = 1,
+}
+
+/// MV 收藏动作 (`AddDelFavMV` 的 `opType`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MvFavAction {
+    /// 收藏.
+    Fav = 0,
+    /// 取消收藏.
+    Unfav = 1,
+}

@@ -8,6 +8,7 @@ use crate::context::RequestOptions;
 use crate::error::{QmError, Result};
 use crate::models::login::*;
 use crate::models::Credential;
+use crate::reply::CgiReply;
 use crate::utils::hash33;
 use crate::versioning::Platform;
 
@@ -57,15 +58,10 @@ impl LoginApi {
         }
     }
 
-    fn validate_result(resp: &Value) -> Result<Credential> {
-        let code = resp.get("code").and_then(Value::as_i64).unwrap_or(0);
-        let data = resp.get("data").cloned().unwrap_or(Value::Null);
+    fn validate_result(reply: crate::reply::CgiReply<Value>) -> Result<Credential> {
+        let CgiReply { code, data } = reply;
         match code {
-            0 => {
-                let cred: Credential = serde_json::from_value(resp.get("data").cloned().unwrap_or(Value::Null))
-                    .map_err(|e| QmError::Deserialize(e.to_string()))?;
-                Ok(cred)
-            }
+            0 => serde_json::from_value(data).map_err(QmError::from),
             1000 | 104401 | 104400 => Err(QmError::CredentialExpired(format!("登录鉴权参数无效或已过期 (code {code})"))),
             20261 => Err(QmError::Login {
                 message: "登录参数错误".into(),
@@ -143,12 +139,11 @@ impl LoginApi {
 
         let mut opts = RequestOptions::default();
         opts.credential = Some(target);
-        opts.allow_error_codes = Some(vec![1000, 104401, 104400]);
-        let data = self
+        let reply = self
             .base
-            .cgi("music.UserInfo.userInfoServer", "GetLoginUserInfo", json!({}), opts)
+            .cgi_reply("music.UserInfo.userInfoServer", "GetLoginUserInfo", json!({}), opts)
             .await?;
-        Ok(data.get("code").and_then(Value::as_i64).unwrap_or(-1) != 0)
+        Ok(reply.code != 0)
     }
 
     /// 尝试刷新登录凭证.
@@ -190,13 +185,11 @@ impl LoginApi {
         let mut opts = RequestOptions::default();
         opts.comm = Some(json!({ "tmeLoginType": target.login_type }));
         opts.credential = Some(target);
-        opts.allow_error_codes = Some(LOGIN_ERROR_CODES.to_vec());
-        let data = self
+        let reply = self
             .base
-            .cgi("music.login.LoginServer", "Login", param, opts)
+            .cgi_reply("music.login.LoginServer", "Login", param, opts)
             .await?;
-        let resp = json!({ "code": 0, "data": data });
-        Self::validate_result(&resp).map_err(|e| match e {
+        Self::validate_result(reply).map_err(|e| match e {
             QmError::Login { message, code } => QmError::CredentialRefresh(format!("{message} (code {code})")),
             other => other,
         })
@@ -207,9 +200,8 @@ impl LoginApi {
         let mut opts = RequestOptions::default();
         opts.require_login = true;
         opts.credential = credential.cloned();
-        opts.allow_error_codes = Some(LOGIN_ERROR_CODES.to_vec());
         self.base
-            .cgi("music.login.LoginServer", "Logout", json!({}), opts)
+            .cgi_reply("music.login.LoginServer", "Logout", json!({}), opts)
             .await?;
         if credential.is_none() {
             self.base.context.set_credential(Credential::default());
@@ -247,7 +239,8 @@ impl LoginApi {
         );
         opts.params = params;
 
-        // 直接使用 reqwest 以获取 Set-Cookie (qrsig).
+        // 直接使用 context 的 HTTP 客户端 (共享代理/限流/cookie).
+        self.base.context.limiter.acquire().await;
         let url_full = format!("{url}?{}", {
             opts.params
                 .iter()
@@ -266,10 +259,7 @@ impl LoginApi {
             .map_err(|e| QmError::Network(e.to_string()))?;
         let status = resp.status().as_u16();
         if status != 200 {
-            return Err(QmError::Http {
-                status,
-                body: String::new(),
-            });
+            return Err(QmError::http(status, String::new()));
         }
         let qrsig = extract_cookie(&resp, "qrsig");
         if qrsig.is_empty() {
@@ -508,10 +498,9 @@ impl LoginApi {
                 }
                 let mut opts = RequestOptions::default();
                 opts.comm = Some(json!({ "tmeLoginType": 6 }));
-                opts.allow_error_codes = Some(LOGIN_ERROR_CODES.to_vec());
-                let data = self
+                let reply = self
                     .base
-                    .cgi(
+                    .cgi_reply(
                         "music.login.LoginServer",
                         "Login",
                         json!({
@@ -522,8 +511,7 @@ impl LoginApi {
                         opts,
                     )
                     .await?;
-                let resp = json!({ "code": 0, "data": data });
-                let credential = Self::validate_result(&resp)?;
+                let credential = Self::validate_result(reply)?;
                 Ok(Some(QRLoginResult {
                     event: QRCodeLoginEvents::Done,
                     credential: Some(credential),
@@ -683,6 +671,7 @@ impl LoginApi {
                 .collect::<Vec<_>>()
                 .join("&")
         );
+        self.base.context.limiter.acquire().await;
         let resp = self
             .base
             .context
@@ -712,8 +701,13 @@ impl LoginApi {
             "g_tk": hash33(&p_skey, 5381),
             "auth_time": now_ms().to_string(),
         });
-        let http = reqwest::Client::new();
-        let resp = http
+        // 使用 context 的 HTTP 客户端 (共享代理/限流/cookie), 跟随重定向后
+        // 从最终 URL 提取授权码 (OAuth 跳转到 redirect_uri?code=...).
+        self.base.context.limiter.acquire().await;
+        let resp = self
+            .base
+            .context
+            .http
             .post("https://graph.qq.com/oauth2.0/authorize")
             .header("Referer", "https://xui.ptlogin2.qq.com/")
             .header("Cookie", format!("uin={uin}; p_skey={p_skey}"))
@@ -721,44 +715,40 @@ impl LoginApi {
             .send()
             .await
             .map_err(|e| QmError::Network(e.to_string()))?;
-        let location = resp
-            .headers()
-            .get("Location")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .to_string();
-        let code = extract_between(&location, "code=", "&").unwrap_or_default();
-        if code.is_empty() {
+        let status = resp.status().as_u16();
+        let final_url = resp.url().clone();
+        let code = final_url
+            .query_pairs()
+            .find(|(k, _)| k == "code")
+            .map(|(_, v)| v.into_owned())
+            .unwrap_or_default();
+        if status != 200 || code.is_empty() {
             return Err(QmError::ApiData("获取 code 失败".into()));
         }
 
         let mut opts = RequestOptions::default();
         opts.comm = Some(json!({ "tmeLoginType": 2 }));
-        opts.allow_error_codes = Some(LOGIN_ERROR_CODES.to_vec());
-        let data = self
+        let reply = self
             .base
-            .cgi("QQConnectLogin.LoginServer", "QQLogin", json!({ "code": code }), opts)
+            .cgi_reply("QQConnectLogin.LoginServer", "QQLogin", json!({ "code": code }), opts)
             .await?;
-        let resp = json!({ "code": 0, "data": data });
-        Self::validate_result(&resp)
+        Self::validate_result(reply)
     }
 
     /// 完成微信二维码鉴权并返回凭证.
     async fn authorize_wx_qr(&self, code: &str) -> Result<Credential> {
         let mut opts = RequestOptions::default();
         opts.comm = Some(json!({ "tmeLoginType": 1 }));
-        opts.allow_error_codes = Some(LOGIN_ERROR_CODES.to_vec());
-        let data = self
+        let reply = self
             .base
-            .cgi(
+            .cgi_reply(
                 "music.login.LoginServer",
                 "Login",
                 json!({ "code": code, "strAppid": "wx48db31d50e334801" }),
                 opts,
             )
             .await?;
-        let resp = json!({ "code": 0, "data": data });
-        Self::validate_result(&resp)
+        Self::validate_result(reply)
     }
 
     /// 发送手机验证码.
@@ -772,17 +762,18 @@ impl LoginApi {
         let mut opts = RequestOptions::default();
         opts.comm = Some(json!({ "tmeLoginMethod": 3 }));
         opts.platform = Some(Platform::Android);
-        opts.allow_error_codes = Some(vec![0, 20276, 100001]);
-        opts.parse_on_allow = true;
-        let resp = self
+        let reply = self
             .base
-            .cgi("music.login.LoginServer", "SendPhoneAuthCode", param, opts)
+            .cgi_reply("music.login.LoginServer", "SendPhoneAuthCode", param, opts)
             .await?;
-        let code = resp.get("code").and_then(Value::as_i64).unwrap_or(0);
-        match code {
+        match reply.code {
             20276 => Ok(PhoneAuthCodeResult {
                 event: PhoneLoginEvents::Captcha,
-                info: resp.get("data").and_then(|d| d.get("securityURL")).and_then(Value::as_str).map(|s| s.to_string()),
+                info: reply
+                    .data
+                    .get("securityURL")
+                    .and_then(Value::as_str)
+                    .map(|s| s.to_string()),
             }),
             100001 => Ok(PhoneAuthCodeResult {
                 event: PhoneLoginEvents::Frequency,
@@ -794,7 +785,7 @@ impl LoginApi {
             }),
             _ => Err(QmError::Login {
                 message: "发送验证码失败".into(),
-                code,
+                code: reply.code,
             }),
         }
     }
@@ -810,13 +801,11 @@ impl LoginApi {
         let mut opts = RequestOptions::default();
         opts.comm = Some(json!({ "tmeLoginMethod": 3, "tmeLoginType": 0 }));
         opts.platform = Some(Platform::Android);
-        opts.allow_error_codes = Some(LOGIN_ERROR_CODES.to_vec());
-        let data = self
+        let reply = self
             .base
-            .cgi("music.login.LoginServer", "Login", param, opts)
+            .cgi_reply("music.login.LoginServer", "Login", param, opts)
             .await?;
-        let resp = json!({ "code": 0, "data": data });
-        Self::validate_result(&resp)
+        Self::validate_result(reply)
     }
 }
 

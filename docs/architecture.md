@@ -28,13 +28,16 @@ Client
    - `payload = { "comm": <comm>, "req_0": { module, method, param } }`
    - URL：普通 `https://u.y.qq.com/cgi-bin/musicu.fcg`；
      需要签名时 `https://u.y.qq.com/cgi-bin/musics.fcg`，并附加 `_` 与 `sign`。
-4. 发送 POST，解析响应信封：
-   - 外层 `code != 0` → `GlobalApi`
-   - 取 `req_0`，若 `code != 0` 且在允许集合内 → 按 `parse_on_allow` 处理
-   - `2000` → `SignatureRequired`，`2001` → `RateLimited`
-   - `1000/104401/104400` → `CredentialExpired`
-   - 其他非零 → `CgiApi`
-   - 否则返回 `req_0.data`
+4. 发送 POST，解析响应信封（`parse_cgi_envelope`）：
+   - 外层 `code != 0` → `GlobalApi`（transport 级错误）
+   - 其余情况**始终**返回固定形状 `CgiReply { code, data }`，不解释业务错误码。
+5. 业务层决定如何解释 `code`：
+   - 普通接口经 `require_success()`：`2000` → `SignatureRequired`，`2001` → `RateLimited`，
+     `1000/104401/104400` → `CredentialExpired`，其他非零 → `CgiApi`，`0` → 返回 `data`
+   - 登录等接口直接读取 `code` 自行处理（如 `20276` 验证码、`20271` 验证码错误等）
+
+批量请求 `request_cgi_batch` 返回 `Vec<CgiReply>`，单个子请求的业务错误码不会导致
+整体失败。
 
 ## comm 公共参数
 
@@ -74,7 +77,8 @@ QIMEI：
 - 请求负载使用 RSA（PKCS1v15，公钥硬编码）加密随机 AES key，
   再用 AES-128-CBC（key == iv）加密业务数据
 - 请求头 / 请求体使用 MD5 签名
-- 结果缓存 24 小时
+- 结果缓存 24 小时，**写回 `Device`（`qimei`/`qimei36`/`qimei_save_time`）**，
+  因此 `Client::save_device` 可持久化
 
 ## QRC 歌词解密
 
@@ -85,10 +89,16 @@ QIMEI：
 
 `models::lyric::GetLyricResponse::parse` 会自动解密，无需手动处理。
 
-## Android session
+## Android session 与单一状态源
 
 Android 平台的 `comm` 需要 `uid` / `sid`。首次请求时调用
 `music.getSession.session` 获取并缓存 24 小时。
+
+`Device` 是设备指纹（QIMEI / session）的**唯一状态源**：运行时获取的新
+QIMEI / session 都会写回 `Device`（`session_uid`/`session_sid`/
+`session_save_time`），`build_comm` 直接读取 `Device`，从而保证
+`Client::save_device` / `load_device` 能跨进程复用，且不存在
+"context 缓存一份、device 一份"的双状态源问题。
 
 ## 手机客户端二维码登录（MQTT）
 
@@ -103,6 +113,21 @@ Android 平台的 `comm` 需要 `uid` / `sid`。首次请求时调用
    （`scanned/canceled/timeout/cookies/loginFailed`）
 
 支持 CONNACK 服务器重定向（reason `0x9C/0x9D` + `serverReference`）。
+
+`try_parse_packet` 保留完整 Fixed Header（含低 4 位标志位），因此 PUBLISH 的
+QoS 1/2 会正确跳过 packet id；`parse_properties` 对未知属性按 MQTT 5 属性注册表
+跳过其值，避免把后续内容误当作 payload。
+
+## 协议测试
+
+- `parse_cgi_envelope` 单测覆盖成功 / 业务错误码透传 / 全局错误 / 批量 / 缺失
+  `req_N` / 空 data。
+- `ApiContext::cgi_base_url` 可指向本地 mock 服务器（`context.rs` 测试内的
+  axum 服务），端到端验证 `request_cgi` / `request_cgi_batch` 的 envelope 契约
+  与部分失败。
+- 模型 schema drift 测试验证字段缺失/改名时按 `#[serde(default)]` 兜底。
+- QIMEI / session 的 Device 缓存命中与并发读一致性有专门测试。
+- `mqtt.rs` 含 MQTT 5 报文构造/解析与 QoS 1/2 偏移的位级单测。
 
 ## 连续翻页
 

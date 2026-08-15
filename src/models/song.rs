@@ -209,6 +209,17 @@ pub struct SheetMusic {
     pub sheet_file: String,
 }
 
+/// 曲谱来源类型.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SheetType {
+    /// 用户上传.
+    User = 0,
+    /// 引擎 / AI 曲谱.
+    EngineAi = 1,
+    /// 虫虫钢琴.
+    ChongChong = 2,
+}
+
 /// 曲谱响应.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct GetSheetResponse {

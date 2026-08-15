@@ -169,9 +169,56 @@ fn read_string(data: &[u8], pos: &mut usize) -> Option<String> {
     String::from_utf8(s.to_vec()).ok()
 }
 
+/// 读取定长字节串 (Binary Data, 2 字节长度前缀).
+fn read_binary(data: &[u8], pos: &mut usize) -> Option<Vec<u8>> {
+    let len = u16::from_be_bytes([*data.get(*pos)?, *data.get(*pos + 1)?]) as usize;
+    *pos += 2;
+    let s = data.get(*pos..*pos + len)?;
+    *pos += len;
+    Some(s.to_vec())
+}
+
+/// 跳过未知 MQTT 5.0 属性的值 (按属性注册表确定长度), 保证前向兼容.
+///
+/// 返回 `false` 表示缓冲不足; 成功时 `pos` 前进到属性值末尾.
+fn skip_unknown_property(pid: u8, data: &[u8], pos: &mut usize) -> Option<()> {
+    let skip = match pid {
+        // Byte (1)
+        0x00 | 0x17 | 0x19 | 0x22 | 0x23 | 0x26 | 0x27 | 0x28 => 1,
+        // Two-Byte Integer (2)
+        0x01 | 0x13 | 0x1E | 0x1F | 0x21 => 2,
+        // Four-Byte Integer (4)
+        0x02 | 0x11 | 0x12 | 0x18 | 0x25 => 4,
+        // UTF-8 String (长度前缀)
+        0x03 | 0x08 | 0x1A | 0x1B | 0x1C | 0x1D => {
+            let _ = read_string(data, pos)?;
+            return Some(());
+        }
+        // Binary Data (长度前缀)
+        0x09 | 0x16 => {
+            let _ = read_binary(data, pos)?;
+            return Some(());
+        }
+        // Variable Byte Integer
+        0x0B | 0x0C | 0x0D | 0x0E | 0x0F | 0x10 => {
+            let _ = read_varint(data, pos)?;
+            return Some(());
+        }
+        _ => return None,
+    };
+    if data.len() < *pos + skip {
+        return None;
+    }
+    *pos += skip;
+    Some(())
+}
+
 fn parse_properties(data: &[u8], pos: &mut usize) -> Option<MqttProperties> {
     let plen = read_varint(data, pos)? as usize;
     let end = (*pos).saturating_add(plen);
+    if data.len() < end {
+        return None;
+    }
     let mut props = MqttProperties::default();
     while *pos < end {
         let pid = read_varint(data, pos)? as u8;
@@ -195,8 +242,8 @@ fn parse_properties(data: &[u8], pos: &mut usize) -> Option<MqttProperties> {
                 props.user_property.push((k, v));
             }
             _ => {
-                // 遇到未知属性停止解析 (当前服务器仅使用上述属性).
-                break;
+                // 未知属性: 按类型跳过值, 而不是把后续内容误当作 payload.
+                skip_unknown_property(pid, data, pos)?;
             }
         }
     }
@@ -286,7 +333,7 @@ impl MqttClient {
     async fn wait_connack(&mut self) -> Result<ConnackOutcome> {
         loop {
             let (kind, body) = self.read_packet().await?;
-            match kind {
+            match kind & 0xF0 {
                 0x20 => {
                     // CONNACK: session present(1) + reason code(1) + properties
                     let mut pos = 0;
@@ -321,7 +368,7 @@ impl MqttClient {
 
         loop {
             let (kind, body) = self.read_packet().await?;
-            match kind {
+            match kind & 0xF0 {
                 0x90 => {
                     // SUBACK: packet id(2) + properties + reason codes
                     let mut pos = 0;
@@ -351,7 +398,7 @@ impl MqttClient {
     pub async fn next_message(&mut self) -> Result<MqttMessage> {
         loop {
             let (kind, body) = self.read_packet().await?;
-            match kind {
+            match kind & 0xF0 {
                 0x30 => {
                     // PUBLISH: topic + [packet id] + properties + payload
                     let mut pos = 0;
@@ -423,6 +470,9 @@ enum ConnackOutcome {
 }
 
 /// 从字节缓冲区解析一个完整数据包.
+///
+/// 返回 `(consumed, first_byte, body)`. `first_byte` 保留完整 Fixed Header,
+/// 其中低 4 位是标志位 (PUBLISH 的 QoS 等), 调用方按需 `& 0xF0` 取类型.
 fn try_parse_packet(buf: &[u8]) -> Option<(usize, u8, Vec<u8>)> {
     if buf.is_empty() {
         return None;
@@ -434,7 +484,7 @@ fn try_parse_packet(buf: &[u8]) -> Option<(usize, u8, Vec<u8>)> {
     if buf.len() < total {
         return None;
     }
-    Some((total, first & 0xF0, buf[pos..total].to_vec()))
+    Some((total, first, buf[pos..total].to_vec()))
 }
 
 /// 根据 serverReference 生成重定向后的握手路径.
@@ -450,4 +500,146 @@ fn build_redirect_path(path: &str, server_reference: &str) -> String {
         }
     }
     format!("{trimmed}/{server_reference}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn encode_props_len(len: usize) -> Vec<u8> {
+        encode_varint(len as u64)
+    }
+
+    /// 构造一个 PUBLISH 数据包.
+    fn build_publish(qos: u8, topic: &str, packet_id: Option<u16>, props: &[u8], payload: &[u8]) -> Vec<u8> {
+        let mut body = Vec::new();
+        body.extend(encode_string(topic));
+        if qos > 0 {
+            body.extend(packet_id.unwrap_or(1).to_be_bytes());
+        }
+        body.extend(encode_props_len(props.len()));
+        body.extend(props);
+        body.extend(payload);
+        let first = 0x30 | (qos << 1);
+        let mut packet = vec![first];
+        packet.extend(encode_varint(body.len() as u64));
+        packet.extend(body);
+        packet
+    }
+
+    #[test]
+    fn try_parse_packet_preserves_qos_flags() {
+        // QoS 1 PUBLISH: first byte 0x32.
+        let packet = build_publish(1, "topic/a", Some(7), &[], b"hello");
+        let (consumed, first, body) = try_parse_packet(&packet).unwrap();
+        assert_eq!(consumed, packet.len());
+        assert_eq!(first, 0x32);
+        // 低 4 位标志位保留, QoS 可从完整字节中读取.
+        assert_eq!((first & 0x06) >> 1, 1);
+        assert_eq!(body.len(), packet.len() - 2); // fixed header = first byte + varint
+    }
+
+    #[test]
+    fn qos1_publish_payload_offset() {
+        // 模拟 next_message 的解析逻辑, 验证 QoS 1 时跳过 2 字节 packet id 后 payload 正确.
+        let topic = "management.qrcode_login/abc";
+        let payload = br#"{"type":"scanned"}"#;
+        let packet = build_publish(1, topic, Some(7), &[], payload);
+        let (_, first, body) = try_parse_packet(&packet).unwrap();
+
+        let mut pos = 0;
+        let parsed_topic = read_string(&body, &mut pos).unwrap();
+        assert_eq!(parsed_topic, topic);
+        let qos = (first & 0x06) >> 1;
+        assert_eq!(qos, 1);
+        if qos > 0 {
+            pos += 2;
+        }
+        let props = parse_properties(&body, &mut pos).unwrap_or_default();
+        assert!(props.user_property.is_empty());
+        assert_eq!(body.get(pos..).unwrap(), payload);
+    }
+
+    #[test]
+    fn qos0_publish_no_packet_id() {
+        let payload = br#"{"a":1}"#;
+        let packet = build_publish(0, "t", None, &[], payload);
+        let (_, first, body) = try_parse_packet(&packet).unwrap();
+        let mut pos = 0;
+        let _ = read_string(&body, &mut pos).unwrap();
+        let qos = (first & 0x06) >> 1;
+        assert_eq!(qos, 0);
+        let _props = parse_properties(&body, &mut pos).unwrap_or_default();
+        assert_eq!(body.get(pos..).unwrap(), payload);
+    }
+
+    #[test]
+    fn parse_properties_skips_unknown_and_reads_user_property() {
+        // 未知属性 0x21 (Topic Alias, 2 字节) + 用户属性 type=scanned.
+        let mut props_bytes = Vec::new();
+        props_bytes.push(0x21);
+        props_bytes.extend(7u16.to_be_bytes());
+        props_bytes.push(property_id::USER_PROPERTY);
+        props_bytes.extend(encode_string("type"));
+        props_bytes.extend(encode_string("scanned"));
+        let packet = build_publish(0, "t", None, &props_bytes, b"PAYLOAD");
+        let (_, _, body) = try_parse_packet(&packet).unwrap();
+        let mut pos = 0;
+        let _ = read_string(&body, &mut pos).unwrap();
+        let props = parse_properties(&body, &mut pos).unwrap();
+        assert_eq!(props.user_property, vec![("type".to_string(), "scanned".to_string())]);
+        // 未知属性已被跳过, payload 起点正确.
+        assert_eq!(body.get(pos..).unwrap(), b"PAYLOAD");
+    }
+
+    #[test]
+    fn varint_roundtrip() {
+        for v in [0u64, 1, 127, 128, 300, 16_383, 16_384, 2_097_151, 268_435_455] {
+            let enc = encode_varint(v);
+            let mut pos = 0;
+            let dec = read_varint(&enc, &mut pos).unwrap();
+            assert_eq!(dec, v);
+            assert_eq!(pos, enc.len());
+        }
+    }
+
+    #[test]
+    fn build_connect_roundtrips_properties() {
+        let props = MqttProperties::default()
+            .auth_method("pass")
+            .user_property(&[("tmeAppID", "qqmusic")]);
+        let packet = build_connect("client-1", 45, &props);
+        let (_, first, body) = try_parse_packet(&packet).unwrap();
+        assert_eq!(first & 0xF0, 0x10); // CONNECT
+        // protocol name
+        let mut pos = 0;
+        let proto = read_string(&body, &mut pos).unwrap();
+        assert_eq!(proto, "MQTT");
+        assert_eq!(body[pos], 5); // version
+        pos += 1;
+        pos += 1; // connect flags
+        pos += 2; // keep alive
+        let parsed = parse_properties(&body, &mut pos).unwrap();
+        assert_eq!(parsed.auth_method.as_deref(), Some("pass"));
+        assert_eq!(parsed.user_property, vec![("tmeAppID".to_string(), "qqmusic".to_string())]);
+        let cid = read_string(&body, &mut pos).unwrap();
+        assert_eq!(cid, "client-1");
+    }
+
+    #[test]
+    fn subscribe_build_and_parse_reasons() {
+        let props = MqttProperties::default().user_property(&[("authorization", "tmelogin")]);
+        let packet = build_subscribe(3, "management.qrcode_login/x", &props);
+        let (_, first, body) = try_parse_packet(&packet).unwrap();
+        assert_eq!(first & 0xF0, 0x80); // SUBSCRIBE (flags 0x2 保留在低 4 位)
+        assert_eq!(first & 0x0F, 0x02);
+        let mut pos = 0;
+        let id = u16::from_be_bytes([body[pos], body[pos + 1]]);
+        pos += 2;
+        assert_eq!(id, 3);
+        let _ = parse_properties(&body, &mut pos).unwrap();
+        let topic = read_string(&body, &mut pos).unwrap();
+        assert_eq!(topic, "management.qrcode_login/x");
+        assert_eq!(body[pos], 0); // QoS 0
+    }
 }

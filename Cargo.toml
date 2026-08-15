@@ -11,6 +11,12 @@ categories = ["web-programming::http-client"]
 name = "qqmusic_api"
 path = "src/lib.rs"
 
+[features]
+# 未经过 live write 验证的写接口 (逆向自官方客户端 ASAR, 语义可能不准确).
+# 默认关闭: 需要显式启用 `--features experimental` 才能调用,
+# 避免把"源码中发现 endpoint"误认为"当前协议已验证".
+experimental = []
+
 [dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["json", "gzip", "brotli", "cookies", "rustls-tls"] }
 tokio = { version = "1", features = ["macros", "rt", "time", "sync", "io-util"] }

@@ -2,7 +2,6 @@
 
 use reqwest::header::{HeaderMap, HeaderValue};
 use serde_json::{json, Value};
-use std::collections::HashSet;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -10,6 +9,7 @@ use crate::device::Device;
 use crate::error::{QmError, Result};
 use crate::qimei;
 use crate::rate_limiter::TokenBucket;
+use crate::reply::CgiReply;
 use crate::sign::zzc_sign;
 use crate::versioning::{Platform, VersionPolicy};
 use crate::Credential;
@@ -20,8 +20,6 @@ pub struct RequestOptions {
     pub comm: Option<Value>,
     pub override_comm: bool,
     pub preserve_bool: bool,
-    pub allow_error_codes: Option<Vec<i64>>,
-    pub parse_on_allow: bool,
     pub credential: Option<Credential>,
     pub platform: Option<Platform>,
     pub sign: bool,
@@ -34,8 +32,6 @@ impl Default for RequestOptions {
             comm: None,
             override_comm: false,
             preserve_bool: false,
-            allow_error_codes: None,
-            parse_on_allow: false,
             credential: None,
             platform: None,
             sign: false,
@@ -44,15 +40,11 @@ impl Default for RequestOptions {
     }
 }
 
-/// Android 平台会话缓存 (来自 `music.getSession.session`).
-#[derive(Debug, Clone, Default)]
-struct Session {
-    uid: String,
-    sid: String,
-    save_time: i64,
-}
-
 /// 请求上下文: 持有 HTTP 客户端、平台、版本策略、凭证与设备状态.
+///
+/// `Device` 是设备指纹 (含 QIMEI / Android session) 的**唯一状态源**;
+/// 运行时获取的新 QIMEI / session 会写回 `Device`, 以便
+/// `Client::save_device` / `load_device` 持久化后能跨进程复用.
 #[derive(Debug)]
 pub struct ApiContext {
     /// 底层 HTTP 客户端.
@@ -61,11 +53,10 @@ pub struct ApiContext {
     pub platform: Platform,
     /// 版本策略.
     pub version_policy: VersionPolicy,
+    /// CGI 基础地址 (默认 `https://u.y.qq.com/cgi-bin`), 测试时可指向 mock 服务器.
+    pub cgi_base_url: String,
     credential: Mutex<Credential>,
     device: Mutex<Device>,
-    qimei: Mutex<Option<(String, String)>>,
-    qimei_time: Mutex<i64>,
-    session: Mutex<Option<Session>>,
     /// 请求限流器.
     pub limiter: TokenBucket,
 }
@@ -111,11 +102,9 @@ impl ApiContext {
             http,
             platform: platform.unwrap_or(Platform::Android),
             version_policy: VersionPolicy::default(),
+            cgi_base_url: "https://u.y.qq.com/cgi-bin".to_string(),
             credential: Mutex::new(credential.unwrap_or_default()),
             device: Mutex::new(Device::random()),
-            qimei: Mutex::new(None),
-            qimei_time: Mutex::new(0),
-            session: Mutex::new(None),
             limiter: TokenBucket::default(),
         })
     }
@@ -140,9 +129,13 @@ impl ApiContext {
         *self.device.lock().unwrap() = device;
     }
 
-    /// 读取当前 QIMEI 缓存.
+    /// 读取当前缓存的 QIMEI (从 `Device`, 单一状态源).
     pub fn qimei(&self) -> Option<(String, String)> {
-        self.qimei.lock().unwrap().clone()
+        let device = self.device();
+        match (device.qimei, device.qimei36) {
+            (Some(q16), Some(q36)) if !q16.is_empty() && !q36.is_empty() => Some((q16, q36)),
+            _ => None,
+        }
     }
 
     /// 获取 User-Agent.
@@ -157,9 +150,13 @@ impl ApiContext {
             return Ok(());
         }
         {
-            let session = self.session.lock().unwrap();
-            if let Some(s) = session.as_ref() {
-                if now() - s.save_time < 86_400 && !s.uid.is_empty() && !s.sid.is_empty() {
+            let device = self.device();
+            if let (Some(uid), Some(sid)) = (device.session_uid.as_ref(), device.session_sid.as_ref()) {
+                let fresh = device
+                    .session_save_time
+                    .map(|t| now() - t < 86_400)
+                    .unwrap_or(false);
+                if fresh && !uid.is_empty() && !sid.is_empty() {
                     return Ok(());
                 }
             }
@@ -191,10 +188,7 @@ impl ApiContext {
             .map_err(|e| QmError::Network(e.to_string()))?;
         let status = resp.status().as_u16();
         if status != 200 {
-            return Err(QmError::Http {
-                status,
-                body: resp.text().await.unwrap_or_default(),
-            });
+            return Err(QmError::http(status, resp.text().await.unwrap_or_default()));
         }
         let value: Value = resp.json().await?;
         let session_data = &value["req_0"]["data"]["session"];
@@ -203,26 +197,31 @@ impl ApiContext {
         if uid.is_empty() || sid.is_empty() {
             return Err(QmError::ApiData("获取 session 失败".into()));
         }
-        let mut session = self.session.lock().unwrap();
-        *session = Some(Session {
-            uid,
-            sid,
-            save_time: now(),
-        });
+        // 写回 Device (单一状态源), 使 save_device 能持久化 session.
+        let mut device = self.device.lock().unwrap();
+        device.session_uid = Some(uid);
+        device.session_sid = Some(sid);
+        device.session_save_time = Some(now());
         Ok(())
     }
 
     /// 获取缓存的 QIMEI, 过期时重新申请.
+    ///
+    /// 从 `Device` 读取缓存 (过期时间 24 小时); 重新申请成功后写回 `Device`.
     pub async fn get_cached_qimei(&self) -> Result<Option<(String, String)>> {
         let profile = self.version_policy.get_profile(Platform::Android);
         let app_version = profile.qimei_app_version.clone().unwrap_or_else(|| "14.9.0.8".into());
         let sdk_version = profile.qimei_sdk_version.clone().unwrap_or_else(|| "1.2.13.6".into());
 
         {
-            let time = self.qimei_time.lock().unwrap();
-            if now() - *time < 86_400 {
-                if let Some(q) = self.qimei.lock().unwrap().as_ref() {
-                    return Ok(Some(q.clone()));
+            let device = self.device();
+            if let (Some(q16), Some(q36)) = (device.qimei.as_ref(), device.qimei36.as_ref()) {
+                let fresh = device
+                    .qimei_save_time
+                    .map(|t| now() - t < 86_400)
+                    .unwrap_or(false);
+                if fresh && !q16.is_empty() && !q36.is_empty() {
+                    return Ok(Some((q16.clone(), q36.clone())));
                 }
             }
         }
@@ -247,9 +246,11 @@ impl ApiContext {
             .map_err(|e| QmError::Network(e.to_string()))?;
         let text = resp.text().await?;
         if let Some(q) = qimei::parse_qimei_response(&text) {
-            let mut qimei = self.qimei.lock().unwrap();
-            *qimei = Some(q.clone());
-            *self.qimei_time.lock().unwrap() = now();
+            // 写回 Device (单一状态源), 使 save_device 能持久化 QIMEI.
+            let mut device = self.device.lock().unwrap();
+            device.qimei = Some(q.0.clone());
+            device.qimei36 = Some(q.1.clone());
+            device.qimei_save_time = Some(now());
             return Ok(Some(q));
         }
         Ok(None)
@@ -331,22 +332,26 @@ impl ApiContext {
         }
 
         let url = if sign {
-            "https://u.y.qq.com/cgi-bin/musics.fcg"
+            format!("{}/musics.fcg", self.cgi_base_url)
         } else {
-            "https://u.y.qq.com/cgi-bin/musicu.fcg"
+            format!("{}/musicu.fcg", self.cgi_base_url)
         };
         let user_agent = self.get_user_agent(target_platform);
         Ok((url.to_string(), payload, params, user_agent))
     }
 
-    /// 执行一个 CGI 请求并返回 `req_0.data` 原始值.
+    /// 执行一个 CGI 请求, 返回固定形状的响应 `CgiReply { code, data }`.
+    ///
+    /// transport 层不解释业务错误码: 无论 `req_0.code` 是否为 0, 均以
+    /// `CgiReply` 返回, 由调用方决定如何处理 (参见 `CgiReply::require_success`).
+    /// 仅在 HTTP 状态异常或全局信封 (`code != 0`) 时返回错误.
     pub async fn request_cgi(
         &self,
         module: &str,
         method: &str,
         param: Value,
         opts: &RequestOptions,
-    ) -> Result<Value> {
+    ) -> Result<CgiReply<Value>> {
         self.limiter.acquire().await;
         if opts.require_login {
             let cred = opts.credential.clone().unwrap_or_else(|| self.credential());
@@ -385,56 +390,21 @@ impl ApiContext {
         let status = resp.status().as_u16();
         let text = resp.text().await.map_err(|e| QmError::Network(e.to_string()))?;
         if status != 200 {
-            return Err(QmError::Http { status, body: text });
+            return Err(QmError::http(status, text));
         }
-        let mut env: Value = serde_json::from_str(&text)?;
-        let env_code = env.get("code").and_then(Value::as_i64).unwrap_or(0);
-        if env_code != 0 {
-            return Err(QmError::GlobalApi { code: env_code, data: text });
-        }
-        let req0 = env
-            .get_mut("req_0")
-            .cloned()
-            .ok_or_else(|| QmError::ApiData("CGI 响应缺少 req_0".into()))?;
-        let code = req0.get("code").and_then(Value::as_i64).unwrap_or(0);
-        let data = req0.get("data").cloned().unwrap_or(Value::Null);
-
-        let allow: HashSet<i64> = opts
-            .allow_error_codes
-            .as_ref()
-            .map(|codes| codes.iter().copied().collect())
-            .unwrap_or_default();
-        if allow.contains(&code) {
-            if opts.parse_on_allow {
-                return Ok(data);
-            }
-            return Ok(req0);
-        }
-        match code {
-            2000 => return Err(QmError::SignatureRequired),
-            2001 => return Err(QmError::RateLimited),
-            1000 | 104401 | 104400 => {
-                return Err(QmError::CredentialExpired(format!("code {code}")));
-            }
-            c if c != 0 => {
-                return Err(QmError::CgiApi {
-                    code: c,
-                    data: data.to_string(),
-                });
-            }
-            _ => {}
-        }
-        Ok(data)
+        parse_cgi_envelope(&text, 0)
     }
 
     /// 批量执行多个 CGI 请求 (合并为一次 `req_0..req_N` 调用).
     ///
-    /// `requests` 为 `(module, method, param)` 三元组列表, 返回每个子请求的 `data`.
+    /// `requests` 为 `(module, method, param)` 三元组列表, 返回与输入顺序一致
+    /// 的每个子请求 `CgiReply { code, data }`. 单个子请求的业务错误码不会导致
+    /// 整个批量请求失败, 由调用方决定如何处理部分失败.
     pub async fn request_cgi_batch(
         &self,
         requests: &[(&str, &str, Value)],
         opts: &RequestOptions,
-    ) -> Result<Vec<Value>> {
+    ) -> Result<Vec<CgiReply<Value>>> {
         if requests.is_empty() {
             return Ok(Vec::new());
         }
@@ -479,49 +449,11 @@ impl ApiContext {
         let status = resp.status().as_u16();
         let text = resp.text().await.map_err(|e| QmError::Network(e.to_string()))?;
         if status != 200 {
-            return Err(QmError::Http { status, body: text });
+            return Err(QmError::http(status, text));
         }
-        let mut env: Value = serde_json::from_str(&text)?;
-        let env_code = env.get("code").and_then(Value::as_i64).unwrap_or(0);
-        if env_code != 0 {
-            return Err(QmError::GlobalApi { code: env_code, data: text });
-        }
-
-        let allow: HashSet<i64> = opts
-            .allow_error_codes
-            .as_ref()
-            .map(|codes| codes.iter().copied().collect())
-            .unwrap_or_default();
         let mut out = Vec::with_capacity(requests.len());
         for i in 0..requests.len() {
-            let req0 = env
-                .get_mut(&format!("req_{i}"))
-                .cloned()
-                .ok_or_else(|| QmError::ApiData(format!("CGI 响应缺少 req_{i}")))?;
-            let code = req0.get("code").and_then(Value::as_i64).unwrap_or(0);
-            let data = req0.get("data").cloned().unwrap_or(Value::Null);
-            if allow.contains(&code) {
-                if opts.parse_on_allow {
-                    out.push(data);
-                } else {
-                    out.push(req0);
-                }
-                continue;
-            }
-            match code {
-                2000 => return Err(QmError::SignatureRequired),
-                2001 => return Err(QmError::RateLimited),
-                1000 | 104401 | 104400 => {
-                    return Err(QmError::CredentialExpired(format!("code {code}")));
-                }
-                c if c != 0 => {
-                    return Err(QmError::CgiApi {
-                        code: c,
-                        data: data.to_string(),
-                    });
-                }
-                _ => out.push(data),
-            }
+            out.push(parse_cgi_envelope(&text, i)?);
         }
         Ok(out)
     }
@@ -538,7 +470,7 @@ impl ApiContext {
         let status = resp.status().as_u16();
         if status != 200 {
             let text = resp.text().await.unwrap_or_default();
-            return Err(QmError::Http { status, body: text });
+            return Err(QmError::http(status, text));
         }
         let bytes = resp.bytes().await.map_err(|e| QmError::Network(e.to_string()))?;
         Ok(bytes.to_vec())
@@ -577,8 +509,232 @@ impl ApiContext {
         let status = resp.status().as_u16();
         let text = resp.text().await.map_err(|e| QmError::Network(e.to_string()))?;
         if status != 200 {
-            return Err(QmError::Http { status, body: text });
+            return Err(QmError::http(status, text));
         }
         Ok(text)
+    }
+}
+
+/// 解析 CGI 全局信封并提取 `req_{index}` 的固定响应 `{ code, data }`.
+///
+/// - HTTP 层已确认状态码为 200;
+/// - 全局信封 `code != 0` 视为 transport 级错误 (`GlobalApi`);
+/// - `req_{index}` 缺失视为 `ApiData` 错误;
+/// - 其余情况返回 `CgiReply { code, data }`, 不解释业务错误码.
+pub(crate) fn parse_cgi_envelope(text: &str, index: usize) -> Result<CgiReply<Value>> {
+    let env: Value = serde_json::from_str(text)?;
+    let env_code = env.get("code").and_then(Value::as_i64).unwrap_or(0);
+    if env_code != 0 {
+        return Err(QmError::GlobalApi {
+            code: env_code,
+            data: crate::error::redact_payload(text, 400),
+        });
+    }
+    let req0 = env
+        .get(&format!("req_{index}"))
+        .cloned()
+        .ok_or_else(|| QmError::ApiData(format!("CGI 响应缺少 req_{index}")))?;
+    let code = req0.get("code").and_then(Value::as_i64).unwrap_or(0);
+    let data = req0.get("data").cloned().unwrap_or(Value::Null);
+    Ok(CgiReply::new(code, data))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_envelope_success() {
+        let text = r#"{"code":0,"req_0":{"code":0,"data":{"songmid":"001X3HEN1oK0Jr","name":"晴天"}}}"#;
+        let reply = parse_cgi_envelope(text, 0).unwrap();
+        assert_eq!(reply.code, 0);
+        assert_eq!(reply.data["name"], "晴天");
+    }
+
+    #[test]
+    fn parse_envelope_preserves_business_error_code() {
+        // 登录错误码 20271 必须原样保留, 不能吞掉.
+        let text = r#"{"code":0,"req_0":{"code":20271,"data":{"message":"验证码错误"}}}"#;
+        let reply = parse_cgi_envelope(text, 0).unwrap();
+        assert_eq!(reply.code, 20271);
+        assert_eq!(reply.data["message"], "验证码错误");
+    }
+
+    #[test]
+    fn parse_envelope_preserves_credential_expired_code() {
+        let text = r#"{"code":0,"req_0":{"code":104400,"data":{}}}"#;
+        let reply = parse_cgi_envelope(text, 0).unwrap();
+        assert_eq!(reply.code, 104400);
+    }
+
+    #[test]
+    fn parse_envelope_global_code_errors() {
+        let text = r#"{"code":-1,"message":"error","req_0":{"code":0,"data":{}}}"#;
+        match parse_cgi_envelope(text, 0) {
+            Err(QmError::GlobalApi { code, .. }) => assert_eq!(code, -1),
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_envelope_missing_req_errors() {
+        let text = r#"{"code":0,"req_1":{"code":0,"data":{}}}"#;
+        match parse_cgi_envelope(text, 0) {
+            Err(QmError::ApiData(_)) => {}
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_envelope_batch_multiple() {
+        let text = r#"{"code":0,"req_0":{"code":0,"data":{"a":1}},"req_1":{"code":2001,"data":{}}}"#;
+        let first = parse_cgi_envelope(text, 0).unwrap();
+        let second = parse_cgi_envelope(text, 1).unwrap();
+        assert_eq!(first.code, 0);
+        assert_eq!(first.data["a"], 1);
+        assert_eq!(second.code, 2001);
+    }
+
+    #[test]
+    fn parse_envelope_null_data() {
+        let text = r#"{"code":0,"req_0":{"code":0}}"#;
+        let reply = parse_cgi_envelope(text, 0).unwrap();
+        assert_eq!(reply.code, 0);
+        assert!(reply.data.is_null());
+    }
+
+    // ------------------------------------------------------------------
+    // contract test harness: 本地 mock MusicU 服务器 + 状态缓存并发.
+    // ------------------------------------------------------------------
+
+    /// 启动一个本地 mock 服务器, 返回其地址.
+    async fn spawn_mock(base_route: &'static str, handler: axum::routing::MethodRouter) -> String {
+        use axum::Router;
+        let app = Router::new().route(base_route, handler);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn request_cgi_against_mock_server() {
+        use axum::routing::post;
+        let base = spawn_mock(
+            "/cgi-bin/musicu.fcg",
+            post(|| async { r#"{"code":0,"req_0":{"code":0,"data":{"name":"晴天"}}}"# }),
+        )
+        .await;
+
+        let mut ctx = ApiContext::new_with_proxy(None, Some(Platform::Web), None).unwrap();
+        ctx.cgi_base_url = format!("{base}/cgi-bin");
+        let reply = ctx
+            .request_cgi(
+                "music.adaptor.SearchAdaptor",
+                "do_search_v2",
+                json!({ "query": "周杰伦" }),
+                &RequestOptions::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(reply.code, 0);
+        assert_eq!(reply.data["name"], "晴天");
+    }
+
+    #[tokio::test]
+    async fn request_cgi_preserves_business_error_from_mock() {
+        use axum::routing::post;
+        let base = spawn_mock(
+            "/cgi-bin/musicu.fcg",
+            post(|| async { r#"{"code":0,"req_0":{"code":104400,"data":{"message":"expired"}}}"# }),
+        )
+        .await;
+
+        let mut ctx = ApiContext::new_with_proxy(None, Some(Platform::Web), None).unwrap();
+        ctx.cgi_base_url = format!("{base}/cgi-bin");
+        let reply = ctx
+            .request_cgi("music.UserInfo.userInfoServer", "GetLoginUserInfo", json!({}), &RequestOptions::default())
+            .await
+            .unwrap();
+        // transport 不吞掉业务错误码.
+        assert_eq!(reply.code, 104400);
+        assert!(matches!(reply.require_success(), Err(QmError::CredentialExpired(_))));
+    }
+
+    #[tokio::test]
+    async fn request_cgi_batch_partial_failure_from_mock() {
+        use axum::routing::post;
+        let body = r#"{"code":0,"req_0":{"code":0,"data":{"ok":1}},"req_1":{"code":2001,"data":{}}}"#;
+        let base = spawn_mock("/cgi-bin/musicu.fcg", post(move || async move { body })).await;
+
+        let mut ctx = ApiContext::new_with_proxy(None, Some(Platform::Web), None).unwrap();
+        ctx.cgi_base_url = format!("{base}/cgi-bin");
+        let reqs = [("music.a", "A", json!({})), ("music.b", "B", json!({}))];
+        let replies = ctx.request_cgi_batch(&reqs, &RequestOptions::default()).await.unwrap();
+        assert_eq!(replies.len(), 2);
+        assert!(replies[0].succeeded());
+        assert_eq!(replies[1].code, 2001);
+        let report = CgiReply::report(&replies);
+        assert_eq!(report.succeeded, 1);
+        assert_eq!(report.failures, vec![(1, 2001)]);
+    }
+
+    #[test]
+    fn model_schema_drift_uses_defaults() {
+        // 曲谱接口字段名变化 / 缺失时, 模型使用默认值而非报错或静默错位.
+        let drift = serde_json::json!({ "result": null, "totalMap": {} });
+        let parsed: crate::models::song::GetSheetResponse =
+            serde_json::from_value(drift).unwrap();
+        assert!(parsed.result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cached_qimei_reused_from_device_without_network() {
+        let ctx = ApiContext::new_with_proxy(None, Some(Platform::Android), None).unwrap();
+        let mut device = ctx.device();
+        device.qimei = Some("q16".into());
+        device.qimei36 = Some("q36".into());
+        device.qimei_save_time = Some(now());
+        ctx.set_device(device);
+
+        let q = ctx.get_cached_qimei().await.unwrap();
+        assert_eq!(q, Some(("q16".into(), "q36".into())));
+        // 缓存未变, 不应重新申请.
+        assert_eq!(ctx.qimei(), Some(("q16".into(), "q36".into())));
+    }
+
+    #[tokio::test]
+    async fn session_reused_from_device_without_network() {
+        let ctx = ApiContext::new_with_proxy(None, Some(Platform::Android), None).unwrap();
+        let mut device = ctx.device();
+        device.session_uid = Some("uid-1".into());
+        device.session_sid = Some("sid-1".into());
+        device.session_save_time = Some(now());
+        ctx.set_device(device);
+
+        ctx.ensure_session(Platform::Android).await.unwrap();
+        assert_eq!(ctx.device().session_uid.as_deref(), Some("uid-1"));
+    }
+
+    #[tokio::test]
+    async fn concurrent_cached_qimei_reads_are_consistent() {
+        let ctx = std::sync::Arc::new(ApiContext::new_with_proxy(None, Some(Platform::Android), None).unwrap());
+        let mut device = ctx.device();
+        device.qimei = Some("q16".into());
+        device.qimei36 = Some("q36".into());
+        device.qimei_save_time = Some(now());
+        ctx.set_device(device);
+
+        let mut handles = Vec::new();
+        for _ in 0..16 {
+            let ctx = ctx.clone();
+            handles.push(tokio::spawn(async move { ctx.get_cached_qimei().await }));
+        }
+        for h in handles {
+            let q = h.await.unwrap().unwrap();
+            assert_eq!(q, Some(("q16".into(), "q36".into())));
+        }
     }
 }

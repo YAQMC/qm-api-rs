@@ -86,8 +86,11 @@ impl HelperApi {
         Ok(serde_json::from_value(data)?)
     }
 
-    /// 检查客户端更新 (官方桌面客户端 `platform.uniteUpdate.UniteUpdateSvr`).
-    pub async fn query_update(&self, cv: i64) -> Result<Value> {
+    /// ⚠️ **Raw 透传** — 检查客户端更新
+    /// (官方桌面客户端 `platform.uniteUpdate.UniteUpdateSvr`).
+    ///
+    /// 响应 schema 未经 live 验证, 仅提供透传能力.
+    pub async fn raw_query_update(&self, cv: i64) -> Result<Value> {
         let mut opts = RequestOptions::default();
         opts.comm = Some(json!({ "ct": 31, "cv": cv }));
         self.base

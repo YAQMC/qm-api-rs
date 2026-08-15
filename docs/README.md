@@ -10,6 +10,7 @@
 - [错误处理](./error-handling.md) — 错误类型与常见错误码
 - [架构与签名](./architecture.md) — 请求流程、comm 构建、签名算法、平台差异
 - [模块 API 参考](./modules.md) — 各模块方法与参数
+- [Experimental 接口](./experimental.md) — 未 live 验证的写接口（feature `experimental`）
 
 ## 参考
 

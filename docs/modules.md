@@ -2,6 +2,10 @@
 
 > 所有方法均为 `async fn`，返回 `Result<T, QmError>`。
 > 需要登录的接口在未登录时会返回 `QmError::CredentialInvalid`。
+>
+> **Raw 透传**：以 `raw_` 前缀命名的方法（逆向自官方桌面客户端 ASAR）直接
+> 透传未验证的 `serde_json::Value` 参数与响应，仅作为底层能力；稳定业务代码
+> 应优先使用类型化方法，自行封装 DTO。
 
 ## 通用能力
 
@@ -14,9 +18,29 @@ let reqs: Vec<(&str, &str, serde_json::Value)> = mids.iter()
     .map(|m| ("music.trackInfo.UniformRuleCtrl", "CgiGetTrackInfo",
              json!({"ctx": 0, "client": 1, "types": [0], "modify_stamp": [0], "mids": [m]})))
     .collect();
-let results = client.request_cgi_batch(&reqs, &Default::default()).await?; // Vec<Value>
-// 或直接反序列化: let typed: Vec<QuerySongResponse> = client.cgi_batch(&reqs, &Default::default()).await?;
+// 每个子请求返回固定形状 CgiReply { code, data }, 不因单个子请求的业务错误码整体失败
+let replies = client.request_cgi_batch(&reqs, &Default::default()).await?; // Vec<CgiReply<Value>>
+// 或要求全部成功并直接反序列化: let typed: Vec<QuerySongResponse> = client.cgi_batch(&reqs, &Default::default()).await?;
 ```
+
+### CGI 响应契约（`CgiReply`）
+
+transport 层（`Client::request_cgi` / `ApiContext::request_cgi`）**始终**返回固定形状
+`CgiReply { code, data }`，不解释业务错误码（已移除旧的 `allow_error_codes` /
+`parse_on_allow` 多态返回）：
+
+```rust
+use qqmusic_api::CgiReply;
+
+// 普通接口: 成功才返回 data, code != 0 时映射为错误
+let data: serde_json::Value = reply.require_success()?;
+
+// 需要解释特殊状态码的接口 (如登录): 直接读取 code
+if reply.code == 20276 { /* 需要验证码 */ }
+```
+
+`CgiReply::require_success_allowing(&[10007])` 允许透传"携带有效数据的业务状态码"
+（如曲谱不存在 10007）。
 
 ### 代理
 
@@ -44,14 +68,29 @@ client.load_device(std::path::Path::new("device.json"))?;
 
 ### 凭证管理（多账号 + 自动刷新）
 
-`CredentialStore` 提供多账号持久化与过期自动刷新：
+`CredentialStore` 提供多账号管理与过期自动刷新，持久化通过可插拔的
+`CredentialPersist` 后端委托给宿主：
+
+- 默认 `FileCredentialPersist` 为**明文 JSON，仅限开发环境**；
+- 生产环境请实现安全后端（系统 Keychain / 加密文件），再以
+  `from_backend` / `with_backend` 注入；
+- `Credential` 的 `Debug` 已对令牌字段做 redaction，不会泄漏进日志。
 
 ```rust
-use qqmusic_api::CredentialStore;
+use qqmusic_api::{CredentialPersist, CredentialStore, FileCredentialPersist};
 
+// 开发环境: 明文 JSON 文件后端
 let store = CredentialStore::load(Path::new("accounts.json"))
     .unwrap_or_else(|_| CredentialStore::new())
     .with_path(Path::new("accounts.json"));
+
+// 生产环境: 宿主实现安全后端
+struct SecureBackend { /* ... */ }
+impl CredentialPersist for SecureBackend {
+    fn load(&self) -> qqmusic_api::Result<Option<String>> { /* 系统安全存储读取 */ }
+    fn save(&self, data: &str) -> qqmusic_api::Result<()> { /* 加密落盘 */ }
+}
+let store = CredentialStore::from_backend(SecureBackend { /* ... */ })?;
 
 // 登录成功后添加账号并持久化
 store.add(credential)?;                 // 空库自动设为当前账号
@@ -137,16 +176,16 @@ song.get_related_songlist(songid, last: &[i64]) -> GetRelatedSonglistResponse
 song.get_related_mv(songid, last_mvid: Option<&str>) -> GetRelatedMvResponse
 
 // 曲谱
-song.get_sheet(mid, ttype /* 0/1/2 */) -> GetSheetResponse
+song.get_sheet(mid, SheetType::User /* 或 EngineAi / ChongChong */) -> GetSheetResponse
 song.has_sheet(mid) -> HasSheetMusicResponse
 
 // 收藏数
 song.get_fav_num(&[songid]) -> GetFavNumResponse
 
-// 补充自官方桌面端 (Electron ASAR)
-song.is_song_fan_by_mid(param, credential) -> Value   // 检查是否已收藏 (需要登录)
-song.get_fav_songlist(param, credential) -> Value      // 收藏歌曲列表 (需要登录)
-song.get_url_vkey(param) -> Value                      // 桌面端下载链接 (GetUrl)
+// 补充自官方桌面端 (Electron ASAR) — Raw 透传 (schema 未 live 验证)
+song.raw_is_song_fan_by_mid(param, credential) -> Value   // 检查是否已收藏 (需要登录)
+song.raw_get_fav_songlist(param, credential) -> Value      // 收藏歌曲列表 (需要登录)
+song.raw_get_url_vkey(param) -> Value                      // 桌面端下载链接 (GetUrl)
 ```
 
 文件类型（`modules::song`）：
@@ -198,9 +237,11 @@ singer.get_mv_list(mid, num, page) -> SingerMvListResponse
 album.get_detail(value /* id 或 mid */) -> GetAlbumDetailResponse
 album.get_song(value, num, page) -> GetAlbumSongResponse
 album.get_new_album(area, num, page) -> GetNewAlbumResponse
-album.fav_album(&[album_id], credential) -> AlbumFavWriteResponse    // 需要登录
-album.del_fav_album(&[album_id], credential) -> AlbumFavWriteResponse // 需要登录
 ```
+
+> ⚠️ `album.fav_album` / `album.del_fav_album` 属于 **Experimental** 写接口
+> （`AlbumFavWrite / FavAlbum / CancelFavAlbum`，逆向自 ASAR，语义未 live 验证），
+> 默认不编译，需启用 `--features experimental`。详见 [experimental](./experimental.md)。
 
 ## lyric（歌词）
 
@@ -239,12 +280,12 @@ songlist.del_songs(dirid, &[(song_id, song_type)], tid, credential) -> bool
 songlist.like_song(&[(song_id, song_type)], credential) -> bool   // 添加到"我喜欢"(dirid=201)
 songlist.unlike_song(&[(song_id, song_type)], credential) -> bool
 
-// 补充自官方桌面端 (Electron ASAR)
-songlist.get_uniform_song_detail(param, credential) -> Value       // 歌单歌曲详情 (dirId=201 为"我喜欢")
-songlist.get_song_detail_info_list_by_dirid(param, credential) -> Value
-songlist.is_playlist_fan(param, credential) -> Value               // 检查歌单是否已收藏 (需要登录)
-songlist.seq_songlist(param, credential) -> bool                   // 歌单排序 (需要登录)
-songlist.cancel_fav_audio(param, credential) -> Value              // 取消收藏长音频 (需要登录)
+// 补充自官方桌面端 (Electron ASAR) — Raw 透传 (schema 未 live 验证)
+songlist.raw_get_uniform_song_detail(param, credential) -> Value       // 歌单歌曲详情 (dirId=201 为"我喜欢")
+songlist.raw_get_song_detail_info_list_by_dirid(param, credential) -> Value
+songlist.raw_is_playlist_fan(param, credential) -> Value               // 检查歌单是否已收藏 (需要登录)
+songlist.raw_seq_songlist(param, credential) -> bool                   // 歌单排序 (需要登录)
+songlist.raw_cancel_fav_audio(param, credential) -> Value              // 取消收藏长音频 (需要登录)
 ```
 
 ## comment（评论）
@@ -258,9 +299,9 @@ comment.get_moment_comments(biz_id, page_size, last_pos, CommentBizType, sub_typ
 comment.add_comment(biz_id, content, reply_cmt_id, CommentBizType, sub_type, credential) -> AddCommentResponse
 comment.delete_comment(cm_id, credential) -> bool
 
-// 补充自官方桌面端 (Electron ASAR)
-comment.get_reply_comments(param, credential) -> Value   // 回复列表
-comment.update_hot_comment(param, credential) -> Value   // 更新热评状态 (需要登录)
+// 补充自官方桌面端 (Electron ASAR) — Raw 透传 (schema 未 live 验证)
+comment.raw_get_reply_comments(param, credential) -> Value   // 回复列表
+comment.raw_update_hot_comment(param, credential) -> Value   // 更新热评状态 (需要登录)
 ```
 
 `CommentBizType`：`Song(0)` `Album(1)` `Mv(2)` `Songlist(3)` `Singer(4)` `Video(5)` `Audio(6)` `AudioAlbum(7)`。
@@ -294,18 +335,21 @@ user.get_fav_album(euin, page, num, credential) -> UserFavAlbumResponse
 user.get_fav_mv(euin, page, num, credential) -> UserFavMvResponse
 user.get_music_gene(euin, credential) -> UserMusicGeneResponse
 user.get_dislike_list(cmd, page, lastid, credential) -> DislikeListData
-user.add_dislike(id_type, &[values], credential) -> bool
-user.cancel_dislike(id_type, &[values], credential) -> bool
+user.add_dislike(DislikeIdType::Songs /* 或 Singers / Styles */, &[values], credential) -> bool
+user.cancel_dislike(DislikeIdType, &[values], credential) -> bool
 user.cancel_all_dislike_song(credential) -> bool
 
-// 补充自官方桌面端 (Electron ASAR)
-user.get_user_vip_info(param, credential) -> Value   // 桌面端 VIP 查询 (SRFVipQuery_V2)
-user.get_user_base_info(param, credential) -> Value  // 用户基础信息 (get_user_baseinfo_v2)
-user.focus_singer(opertype, mid, credential) -> bool // 关注/取关歌手 (cgi_concern_user_v2)
-user.fav_mv(vid, op_type, credential) -> Value       // 收藏/取消收藏 MV (AddDelFavMV)
-user.get_favor_list(param, credential) -> Value      // 收藏的电台列表
-user.get_collect_album_list(param, credential) -> Value // 收藏专辑列表 (GetAlbumFavInfo)
+// 补充自官方桌面端 (Electron ASAR) — Raw 透传 (schema 未 live 验证)
+user.raw_get_user_vip_info(param, credential) -> Value   // 桌面端 VIP 查询 (SRFVipQuery_V2)
+user.raw_get_user_base_info(param, credential) -> Value  // 用户基础信息 (get_user_baseinfo_v2)
+user.raw_get_favor_list(param, credential) -> Value      // 收藏的电台列表
+user.raw_get_collect_album_list(param, credential) -> Value // 收藏专辑列表 (GetAlbumFavInfo)
 ```
+
+> ⚠️ `user.focus_singer` / `user.fav_mv` 属于 **Experimental** 写接口
+> （`cgi_concern_user_v2` 的 `opertype` 正反值、`AddDelFavMV` 的 cmdtype 语义
+> 均未 live 验证），默认不编译，需启用 `--features experimental`。
+> 详见 [experimental](./experimental.md)。
 
 ## login（登录）
 
@@ -326,7 +370,7 @@ login.logout(credential) -> ()
 ```rust
 helper.init_upload(bus_id, &[InitUploadFileDict], credential) -> InitUploadResponse   // 需要登录 + 签名
 helper.finish_upload(bus_id, &[FinishUploadResultDict], credential) -> FinishUploadResponse
-helper.query_update(cv) -> Value   // 客户端更新检查 (官方桌面端)
+helper.raw_query_update(cv) -> Value   // 客户端更新检查 (官方桌面端, Raw 透传)
 
 // 完整 COS 上传流程 (helper_utils::UploadFileSession)
 use qqmusic_api::UploadFileSession;
@@ -375,5 +419,5 @@ private_message.get_chat_entries(scenes, ...) -> PrivateChatEntriesResponse
 private_message.get_media_message_details(session_id, msg_ids, credential) -> PrivateMediaMessageDetailsResponse
 private_message.mark_all_messages_read(cmd_flag, encrypt_uin, credential) -> PrivateOperationResponse
 private_message.get_safety_hint(enc_uin, close, credential) -> PrivateSafetyHintResponse
-private_message.get_friendship_badge(target_enc_uin, credential) -> Value
+private_message.raw_get_friendship_badge(target_enc_uin, credential) -> Value   // Raw 透传
 ```

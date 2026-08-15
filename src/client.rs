@@ -7,6 +7,7 @@ use std::sync::Arc;
 use crate::context::ApiContext;
 use crate::error::{QmError, Result};
 use crate::modules::*;
+use crate::reply::CgiReply;
 use crate::versioning::Platform;
 use crate::Credential;
 
@@ -19,10 +20,6 @@ pub struct CgiOptions {
     pub override_comm: bool,
     /// 是否保留布尔值 (为 false 时转换为 0/1).
     pub preserve_bool: bool,
-    /// 允许的错误码集合 (不抛异常).
-    pub allow_error_codes: Option<Vec<i64>>,
-    /// 当响应包含允许的错误码时, 是否仍尝试解析响应数据.
-    pub parse_on_allow: bool,
     /// 请求凭证 (优先于客户端全局凭证).
     pub credential: Option<Credential>,
     /// 请求平台 (优先于客户端全局平台).
@@ -39,8 +36,6 @@ impl Default for CgiOptions {
             comm: None,
             override_comm: false,
             preserve_bool: false,
-            allow_error_codes: None,
-            parse_on_allow: false,
             credential: None,
             platform: None,
             sign: false,
@@ -62,8 +57,6 @@ impl From<&CgiOptions> for crate::context::RequestOptions {
             comm: o.comm.clone(),
             override_comm: o.override_comm,
             preserve_bool: o.preserve_bool,
-            allow_error_codes: o.allow_error_codes.clone(),
-            parse_on_allow: o.parse_on_allow,
             credential: o.credential.clone(),
             platform: o.platform,
             sign: o.sign,
@@ -182,8 +175,11 @@ impl Client {
         Ok(())
     }
 
-    /// 执行一个 CGI 请求并返回 `req_0.data` 原始值.
-    pub async fn request_cgi(&self, module: &str, method: &str, param: Value, opts: &CgiOptions) -> Result<Value> {
+    /// 执行一个 CGI 请求并返回固定形状的响应 `CgiReply { code, data }`.
+    ///
+    /// transport 层不解释业务错误码; 需要"成功才返回数据"的调用方应使用
+    /// `cgi` / `cgi_typed`, 需要解释特殊状态码的调用方可直接读取 `code`.
+    pub async fn request_cgi(&self, module: &str, method: &str, param: Value, opts: &CgiOptions) -> Result<CgiReply<Value>> {
         let ro: crate::context::RequestOptions = opts.into();
         self.context.request_cgi(module, method, param, &ro).await
     }
@@ -191,41 +187,34 @@ impl Client {
     /// 批量执行多个 CGI 请求 (合并为一次 `req_0..req_N` 调用, 减少网络往返).
     ///
     /// `requests` 为 `(module, method, param)` 三元组列表; 返回与输入顺序一致的
-    /// 每个子请求的 `data`.
+    /// 每个子请求的 `CgiReply { code, data }`. 单个子请求的业务错误码不会导致
+    /// 整个批量请求失败.
     pub async fn request_cgi_batch(
         &self,
         requests: &[(&str, &str, Value)],
         opts: &CgiOptions,
-    ) -> Result<Vec<Value>> {
+    ) -> Result<Vec<CgiReply<Value>>> {
         let ro: crate::context::RequestOptions = opts.into();
         self.context.request_cgi_batch(requests, &ro).await
     }
 
-    /// 批量执行 CGI 请求并反序列化为 `Vec<T>`.
+    /// 批量执行 CGI 请求并反序列化为 `Vec<T>`, 任一子请求 `code != 0` 时失败.
     pub async fn cgi_batch<T: DeserializeOwned>(
         &self,
         requests: &[(&str, &str, Value)],
         opts: &CgiOptions,
     ) -> Result<Vec<T>> {
-        let data = self.request_cgi_batch(requests, opts).await?;
-        data.into_iter()
-            .map(|v| {
-                if v.is_null() {
-                    serde_json::from_value(Value::Object(Default::default())).map_err(QmError::from)
-                } else {
-                    serde_json::from_value(v).map_err(QmError::from)
-                }
-            })
+        let replies = self.request_cgi_batch(requests, opts).await?;
+        replies
+            .into_iter()
+            .map(|reply| reply.into_typed::<T>())
             .collect()
     }
 
-    /// 执行一个 CGI 请求并反序列化为 `T`.
+    /// 执行一个 CGI 请求并反序列化为 `T`, `code != 0` 时失败.
     pub async fn cgi<T: DeserializeOwned>(&self, module: &str, method: &str, param: Value, opts: &CgiOptions) -> Result<T> {
-        let data = self.request_cgi(module, method, param, opts).await?;
-        if data.is_null() {
-            return serde_json::from_value(Value::Object(Default::default())).map_err(QmError::from);
-        }
-        serde_json::from_value(data).map_err(QmError::from)
+        let reply = self.request_cgi(module, method, param, opts).await?;
+        reply.into_typed::<T>()
     }
 
     /// 执行一个标准 HTTP 请求, 返回原始响应文本.

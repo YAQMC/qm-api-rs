@@ -240,8 +240,12 @@ impl CommentApi {
     // 以下接口补充自官方桌面客户端 (Electron ASAR) `common.js`.
     // ------------------------------------------------------------------
 
-    /// 获取回复评论列表 (官方桌面端 `CommentReadServer / GetReplyCommentList`).
-    pub async fn get_reply_comments(&self, param: Value, credential: Option<&Credential>) -> Result<Value> {
+    /// ⚠️ **Raw 透传** — 获取回复评论列表
+    /// (官方桌面端 `CommentReadServer / GetReplyCommentList`).
+    ///
+    /// 参数与响应 schema 未经 live 验证, 仅提供透传能力; 稳定业务代码请勿依赖
+    /// 其具体字段, 应自行封装为类型化 DTO.
+    pub async fn raw_get_reply_comments(&self, param: Value, credential: Option<&Credential>) -> Result<Value> {
         let mut opts = RequestOptions::default();
         opts.credential = credential.cloned();
         self.base
@@ -249,8 +253,9 @@ impl CommentApi {
             .await
     }
 
-    /// 更新热评状态 (官方桌面端 `GlobalCommentWriteServer / UpdateHotComment`).
-    pub async fn update_hot_comment(&self, param: Value, credential: Option<&Credential>) -> Result<Value> {
+    /// ⚠️ **Raw 透传** — 更新热评状态
+    /// (官方桌面端 `GlobalCommentWriteServer / UpdateHotComment`).
+    pub async fn raw_update_hot_comment(&self, param: Value, credential: Option<&Credential>) -> Result<Value> {
         let mut opts = RequestOptions::default();
         opts.require_login = true;
         opts.credential = credential.cloned();

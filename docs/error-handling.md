@@ -21,6 +21,40 @@
 | `QmError::JsonPath(String)` | JSONPath 提取失败 |
 | `QmError::ValueError(String)` | 参数校验失败 |
 
+## 错误分类与重试
+
+`QmError::category() -> ErrorCategory` 提供粗分类（`Network / Auth / Permission /
+BadRequest / RateLimit / NotFound / Server / Other`），供展示与重试策略参考；
+`QmError::is_retryable() -> bool` 对网络抖动、限流（`2001`/`104604`）、
+服务端 5xx 返回 `true`。
+
+```rust
+if e.is_retryable() {
+    // 指数退避后重试
+}
+```
+
+## 脱敏
+
+`QmError` 中的响应载荷（`CgiApi.data` / `GlobalApi.data` / `Http.body`）在进入
+错误前已做脱敏：截断到 400 字符，并掩码 `qm_keyst` / `musickey` /
+`access_token` / `refresh_token` / `p_skey` 等疑似令牌字段。日志中不会出现
+完整响应或敏感凭证。
+
+## 批量请求与部分失败
+
+`request_cgi_batch` 返回 `Vec<CgiReply { code, data }>`，单个子请求的业务错误码
+不会导致整体失败。需要全部成功时用 `cgi_batch`（任一子请求失败即报错）；
+需要处理部分失败时：
+
+```rust
+use qqmusic_api::CgiReply;
+
+let replies = client.request_cgi_batch(&reqs, &Default::default()).await?;
+let (ok, err) = CgiReply::partition(replies);           // 成功 / 失败分组
+let report = CgiReply::report(&replies);                // BatchReport { total, succeeded, failures }
+```
+
 ## 常见错误码
 
 | 错误码 | 含义 | 建议 |

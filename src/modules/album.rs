@@ -6,6 +6,7 @@ use super::ApiModule;
 use crate::context::RequestOptions;
 use crate::error::Result;
 use crate::models::album::*;
+#[cfg(feature = "experimental")]
 use crate::models::Credential;
 
 /// 专辑相关 API.
@@ -64,7 +65,12 @@ impl AlbumApi {
         Ok(serde_json::from_value(data)?)
     }
 
-    /// 收藏专辑到当前登录用户.
+    /// ⚠️ **Experimental** (feature `experimental`) — 收藏专辑到当前登录用户.
+    ///
+    /// 逆向自官方桌面客户端 ASAR; 请求参数/响应语义尚未经 live write 验证,
+    /// 不要对真实账号执行破坏性操作. 默认不编译, 需显式启用
+    /// `--features experimental`.
+    #[cfg(feature = "experimental")]
     pub async fn fav_album(&self, album_id: &[i64], credential: Option<&Credential>) -> Result<AlbumFavWriteResponse> {
         let mut opts = RequestOptions::default();
         opts.require_login = true;
@@ -81,7 +87,12 @@ impl AlbumApi {
         Ok(serde_json::from_value(data)?)
     }
 
-    /// 取消收藏专辑.
+    /// ⚠️ **Experimental** (feature `experimental`) — 取消收藏专辑.
+    ///
+    /// 逆向自官方桌面客户端 ASAR; 请求参数/响应语义尚未经 live write 验证,
+    /// 不要对真实账号执行破坏性操作. 默认不编译, 需显式启用
+    /// `--features experimental`.
+    #[cfg(feature = "experimental")]
     pub async fn del_fav_album(&self, album_id: &[i64], credential: Option<&Credential>) -> Result<AlbumFavWriteResponse> {
         let mut opts = RequestOptions::default();
         opts.require_login = true;

@@ -388,8 +388,10 @@ impl PrivateMessageApi {
         Ok(serde_json::from_value(data)?)
     }
 
-    /// 获取聊天页好友浮标.
-    pub async fn get_friendship_badge(&self, target_enc_uin: &str, credential: Option<&Credential>) -> Result<Value> {
+    /// ⚠️ **Raw 透传** — 获取聊天页好友浮标.
+    ///
+    /// 响应 schema 未经 live 验证, 仅提供透传能力.
+    pub async fn raw_get_friendship_badge(&self, target_enc_uin: &str, credential: Option<&Credential>) -> Result<Value> {
         self.base
             .cgi(
                 "music.dazi.DzEntrySrv",

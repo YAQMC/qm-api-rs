@@ -69,6 +69,8 @@ impl ApiModule {
     }
 
     /// 发送 CGI 请求, 返回 `req_0.data`.
+    ///
+    /// `code != 0` 时映射为错误 (2000/2001/1000/104401/104400 有专用错误类型).
     pub(crate) async fn cgi(
         &self,
         module: &str,
@@ -76,6 +78,20 @@ impl ApiModule {
         param: Value,
         opts: RequestOptions,
     ) -> Result<Value> {
+        let reply = self.context.request_cgi(module, method, param, &opts).await?;
+        reply.require_success()
+    }
+
+    /// 发送 CGI 请求, 返回固定形状的 `CgiReply { code, data }`.
+    ///
+    /// 用于需要解释特殊业务状态码的接口 (如登录流程).
+    pub(crate) async fn cgi_reply(
+        &self,
+        module: &str,
+        method: &str,
+        param: Value,
+        opts: RequestOptions,
+    ) -> Result<crate::reply::CgiReply<Value>> {
         self.context.request_cgi(module, method, param, &opts).await
     }
 

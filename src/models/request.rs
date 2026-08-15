@@ -3,7 +3,10 @@
 use serde::{Deserialize, Serialize};
 
 /// 登录凭证.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+///
+/// `Debug` 实现为 secret-safe: 所有令牌/密钥字段均以 `[redacted]` 输出,
+/// 不会进入日志. 序列化 (登录/刷新结果解析) 不受影响.
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct Credential {
     /// OpenID.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -70,5 +73,63 @@ impl Credential {
         self.musickey_create_time != 0
             && self.key_expires_in != 0
             && now >= self.musickey_create_time + self.key_expires_in
+    }
+}
+
+impl std::fmt::Debug for Credential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // 仅暴露非敏感标识字段; 令牌/密钥一律 redacted.
+        f.debug_struct("Credential")
+            .field("musicid", &self.musicid)
+            .field("str_musicid", &self.str_musicid)
+            .field("login_type", &self.login_type)
+            .field("expired_at", &self.expired_at)
+            .field("bind_account_type", &self.bind_account_type)
+            .field("musickey", &"[redacted]")
+            .field("refresh_token", &"[redacted]")
+            .field("access_token", &"[redacted]")
+            .field("refresh_key", &"[redacted]")
+            .field("openid", &"[redacted]")
+            .field("unionid", &"[redacted]")
+            .field("encrypt_uin", &"[redacted]")
+            .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn debug_redacts_secrets() {
+        let cred = Credential {
+            musicid: 10001,
+            str_musicid: "10001".into(),
+            musickey: "super-secret-musickey".into(),
+            access_token: "super-secret-token".into(),
+            refresh_token: "super-secret-refresh".into(),
+            refresh_key: "super-secret-refreshkey".into(),
+            ..Default::default()
+        };
+        let dbg = format!("{cred:?}");
+        assert!(dbg.contains("10001"), "应保留可读的 musicid");
+        assert!(!dbg.contains("super-secret-musickey"));
+        assert!(!dbg.contains("super-secret-token"));
+        assert!(!dbg.contains("super-secret-refresh"));
+        assert!(dbg.contains("[redacted]"));
+    }
+
+    #[test]
+    fn serde_roundtrip_preserves_secrets() {
+        let cred = Credential {
+            musicid: 42,
+            musickey: "k".into(),
+            refresh_token: "rt".into(),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&cred).unwrap();
+        let back: Credential = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.musickey, "k");
+        assert_eq!(back.refresh_token, "rt");
     }
 }

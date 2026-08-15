@@ -69,19 +69,19 @@ cargo run --example demo
 
 | 模块 | 说明 | 主要方法 |
 | --- | --- | --- |
-| `client.song` | 歌曲 | `get_song_urls`, `get_detail`, `get_similar_song`, `get_sheet`, `is_song_fan_by_mid` 等 |
+| `client.song` | 歌曲 | `get_song_urls`, `get_detail`, `get_similar_song`, `get_sheet(SheetType)` 等 |
 | `client.search` | 搜索 | `search_by_type`, `general_search`, `get_hotkey`, `complete`, `quick_search` |
 | `client.singer` | 歌手 | `get_info`, `get_songs_list`, `get_album_list`, `get_similar` 等 |
-| `client.album` | 专辑 | `get_detail`, `get_song`, `get_new_album`, `fav_album` |
+| `client.album` | 专辑 | `get_detail`, `get_song`, `get_new_album` |
 | `client.lyric` | 歌词 | `get_lyric`（自动 QRC 解密）, `get_ai_dict` 等 |
 | `client.mv` | MV | `get_detail`, `get_mv_urls`, `get_mv_list` |
 | `client.top` | 排行榜 | `get_category`, `get_detail` |
-| `client.songlist` | 歌单 | `get_detail`, `create`, `delete`, `add_songs`, `like_song`, `seq_songlist` 等 |
-| `client.comment` | 评论 | `get_hot_comments`, `get_new_comments`, `add_comment`, `get_reply_comments` 等 |
+| `client.songlist` | 歌单 | `get_detail`, `create`, `delete`, `add_songs`, `like_song` 等 |
+| `client.comment` | 评论 | `get_hot_comments`, `get_new_comments`, `add_comment` 等 |
 | `client.recommend` | 推荐 | `get_home_feed`, `get_guess_recommend`, `get_recommend_songlist` |
-| `client.user` | 用户 | `get_homepage`, `get_vip_info`, `get_created_songlist`, `fav_songlist`, `focus_singer` 等 |
+| `client.user` | 用户 | `get_homepage`, `get_vip_info`, `get_created_songlist`, `fav_songlist`, `add_dislike(DislikeIdType)` 等 |
 | `client.login` | 登录 | `get_qrcode`, `check_qrcode`, `send_authcode`, `phone_authorize`, `refresh_credential` |
-| `client.helper` | 上传辅助 | `init_upload`, `finish_upload`, `query_update`, `UploadFileSession` |
+| `client.helper` | 上传辅助 | `init_upload`, `finish_upload`, `UploadFileSession` |
 | `client.private_message` | 私信 | `get_sessions`, `get_messages`, `send_message` 等 |
 
 通用能力：`Pager` / `page` / `offset` 连续翻页，`request_cgi_batch` 批量请求，
@@ -99,21 +99,24 @@ cargo run --example demo
   `IsSongFanByMid / GetFavSonglist / GetUrl / GetUniformSongDetailInfo /
   GetSongDetailInfoListByDirId / IsPlaylistFan / SeqSonglist / do_favor /
   GetReplyCommentList / UpdateHotComment / SRFVipQuery_V2 / get_user_baseinfo_v2 /
-  cgi_concern_user_v2 / AddDelFavMV / get_favor_list / GetAlbumFavInfo / QueryUpdate`。
+  get_favor_list / GetAlbumFavInfo / QueryUpdate`（这些未经 live 验证的接口以
+  `raw_*` 前缀提供，未验证的写操作另在 feature `experimental` 下）。
 - **登录**：QQ / 微信二维码、手机验证码、手机客户端二维码（MQTT 5.0 over WebSocket
   推送，`src/mqtt.rs`）全部支持。
 - **第三方客户端能力**：QMC 加密音质解密（`qmc`）、LRC/QRC 歌词解析（`lyric_parser`）、
-  多账号凭证管理（`credential_store`）、代理支持（`new_with_proxy`）、
-  **VIP 音质**（`song.available_qualities` / `get_best_song_url` / `download_quality`、
-  `user.is_vip`，配合你账号已购的 VIP 权益）。
+  多账号凭证管理（`credential_store`，可插拔安全后端）、代理支持（`new_with_proxy`）、
+  **VIP 音质**（`MediaSource` 来源描述 + `song.media_source`，播放器直接消费；
+  `song.available_qualities` / `get_best_song_url` / `media::download_quality`
+  + `user.is_vip`，配合你账号已购的 VIP 权益）。
 
 > 影响排序补充进度：
 > ① 加密音质解密 ✅（QMCv1/v2，含参考实现测试向量 + EKey TEA 往返）
-> ③ 凭证自动刷新与多账号 ✅（`CredentialStore`）
+> ③ 凭证自动刷新与多账号 ✅（`CredentialStore`，可插拔安全后端，Debug 已 redaction）
 > ④ 歌词结构化解析 ✅（`lyric_parser`：LRC + QRC 逐字）
 > ⑤ 桌面端完整签名 ✅（`zzc_sign` 与参考逐字节一致，无需 chaos VM）
 > ⑥ 代理/DNS 配置 ✅（`new_with_proxy`）
 > ② VIP 权限 ✅（合规支持：最佳音质选择 + 下载解密 + `is_vip` 检测，权益取决于账号自身）
+> ⚠️ 未 live 验证的写接口已移到 feature `experimental`（默认关闭），见 `docs/experimental.md`。
 > ⑦ 实时推送、⑧ Web 端 OAuth 登录为长周期项。
 
 ## 许可证

@@ -600,14 +600,12 @@ impl SongApi {
 
     /// 获取歌曲相关曲谱.
     ///
-    /// ttype: 0=用户上传, 1=引擎/AI 曲谱, 2=虫虫钢琴.
-    pub async fn get_sheet(&self, mid: &str, ttype: i64) -> Result<GetSheetResponse> {
-        if ttype == 2 {
+    /// `ttype`: `SheetType::User`(0)/`EngineAi`(1)/`ChongChong`(2).
+    pub async fn get_sheet(&self, mid: &str, ttype: SheetType) -> Result<GetSheetResponse> {
+        if ttype == SheetType::ChongChong {
             let mut opts = RequestOptions::default();
             opts.override_comm = true;
             opts.sign = true;
-            opts.allow_error_codes = Some(vec![10007]);
-            opts.parse_on_allow = true;
             opts.comm = Some(json!({
                 "g_tk": 5381,
                 "uin": "",
@@ -618,22 +616,21 @@ impl SongApi {
                 "platform": "h5",
                 "needNewCode": 1,
             }));
-            let data = self
+            let reply = self
                 .base
-                .cgi(
+                .cgi_reply(
                     "music.mir.SheetMusicSvr",
                     "GetChongChongSheetMusic",
                     json!({ "songMid": mid, "begin": 0, "end": 100, "scoreType": -1, "ttype": 1 }),
                     opts,
                 )
                 .await?;
+            let data = reply.require_success_allowing(&[10007])?;
             return Ok(serde_json::from_value(data)?);
         }
-        let score_type = if ttype == 1 { -473 } else { -1 };
+        let score_type = if ttype == SheetType::EngineAi { -473 } else { -1 };
         let mut opts = RequestOptions::default();
         opts.override_comm = true;
-        opts.allow_error_codes = Some(vec![10007]);
-        opts.parse_on_allow = true;
         opts.comm = Some(json!({
             "g_tk": 5381,
             "uin": "",
@@ -643,15 +640,16 @@ impl SongApi {
             "notice": 0,
             "needNewCode": 1,
         }));
-        let data = self
+        let reply = self
             .base
-            .cgi(
+            .cgi_reply(
                 "music.mir.SheetMusicSvr",
                 "GetMoreSheetMusic",
-                json!({ "songMid": mid, "begin": 0, "end": 100, "scoreType": score_type, "ttype": ttype }),
+                json!({ "songMid": mid, "begin": 0, "end": 100, "scoreType": score_type, "ttype": ttype as i64 }),
                 opts,
             )
             .await?;
+        let data = reply.require_success_allowing(&[10007])?;
         Ok(serde_json::from_value(data)?)
     }
 
@@ -735,74 +733,47 @@ impl SongApi {
         Ok((quality, urls))
     }
 
-    /// 下载并解密指定音质的音频 (VIP 流程).
+    /// 获取歌曲最高可用音质的来源描述 (`MediaSource`, 播放器可直接消费).
     ///
-    /// 获取加密音质链接 → 下载 `.mflac/.mgg` → QMC 解密 → 返回 (音频字节, 扩展名).
-    ///
-    /// - 需要 `credential` 为有权限的 VIP 账号.
-    /// - 返回错误时查看 `UrlinfoItem.result` (如 `104003` 无权限).
+    /// 等价于 `media::MediaSource::best(self, song, credential, allow_encrypted)`.
+    pub async fn media_source(
+        &self,
+        song: &Song,
+        credential: Option<&Credential>,
+        allow_encrypted: bool,
+    ) -> Result<crate::media::MediaSource> {
+        crate::media::MediaSource::best(self, song, credential, allow_encrypted).await
+    }
+
+    /// 下载并解密指定音质的音频 (媒体层助手, 见 `media::download_quality`).
     pub async fn download_quality(
         &self,
         song: &Song,
         quality: SongQuality,
         credential: Option<&Credential>,
     ) -> Result<(Vec<u8>, String)> {
-        let file_type = quality.file_type(true);
-        let urls = self
-            .get_song_urls(
-                &[SongFileInfo::new(&song.mid)
-                    .with_song_type(song.r#type)
-                    .with_media_mid(&song.file.media_mid)
-                    .with_type_ref(file_type)],
-                file_type,
-                credential,
-            )
-            .await?;
-        let item = urls
-            .data
-            .first()
-            .ok_or_else(|| QmError::ApiData("获取播放链接失败".into()))?;
-        if item.purl.is_empty() {
-            return Err(QmError::ApiData(format!(
-                "无播放权限 (result={}), 需要对应 VIP 权益",
-                item.result
-            )));
-        }
-        let url = format!("{}{}", self._song_url_fallback_domain, item.purl);
-        let bytes = self.base.context.request_http_bytes(&url, credential).await?;
-        if quality.has_encrypted() && !item.ekey.is_empty() {
-            let (audio, ext) = crate::qmc::decrypt_qmc(&bytes, Some(&item.ekey))?;
-            Ok((audio, ext))
-        } else {
-            // 未加密音质: 直接返回.
-            let ext = crate::qmc::detect_audio_extension(&bytes);
-            let ext = if ext == "bin" { file_type.e().trim_start_matches('.').to_string() } else { ext };
-            Ok((bytes, ext))
-        }
+        crate::media::download_quality(self, song, quality, credential).await
     }
 
-    /// 下载并解密歌曲最高可用音质 (VIP 流程).
+    /// 下载并解密歌曲最高可用音质 (媒体层助手, 见 `media::download_best`).
     pub async fn download_best(
         &self,
         song: &Song,
         credential: Option<&Credential>,
     ) -> Result<(SongQuality, Vec<u8>, String)> {
-        let available = self.available_qualities(song);
-        let quality = *available
-            .first()
-            .ok_or_else(|| QmError::ApiData("歌曲无可用音质".into()))?;
-        let (audio, ext) = self.download_quality(song, quality, credential).await?;
-        Ok((quality, audio, ext))
+        crate::media::download_best(self, song, credential).await
     }
 
     // ------------------------------------------------------------------
     // 以下接口补充自官方桌面客户端 (Electron ASAR) `common.js`.
     // ------------------------------------------------------------------
 
-    /// 检查歌曲是否已被收藏 (官方桌面端 `music.musicasset.SongFavRead / IsSongFanByMid`).
+    /// ⚠️ **Raw 透传** — 检查歌曲是否已被收藏
+    /// (官方桌面端 `music.musicasset.SongFavRead / IsSongFanByMid`).
     ///
-    /// `param` 通常形如 `{"songmid": ["xxx"]}` 或 `{"song_id": [id]}`.
-    pub async fn is_song_fan_by_mid(&self, param: Value, credential: Option<&Credential>) -> Result<Value> {
+    /// `param` 通常形如 `{"songmid": ["xxx"]}` 或 `{"song_id": [id]}`;
+    /// 参数与响应 schema 未经 live 验证, 仅提供透传能力.
+    pub async fn raw_is_song_fan_by_mid(&self, param: Value, credential: Option<&Credential>) -> Result<Value> {
         let mut opts = RequestOptions::default();
         opts.require_login = true;
         opts.credential = credential.cloned();
@@ -811,8 +782,9 @@ impl SongApi {
             .await
     }
 
-    /// 获取收藏歌曲列表 (官方桌面端 `music.musicasset.SongFavRead / GetFavSonglist`).
-    pub async fn get_fav_songlist(&self, param: Value, credential: Option<&Credential>) -> Result<Value> {
+    /// ⚠️ **Raw 透传** — 获取收藏歌曲列表
+    /// (官方桌面端 `music.musicasset.SongFavRead / GetFavSonglist`).
+    pub async fn raw_get_fav_songlist(&self, param: Value, credential: Option<&Credential>) -> Result<Value> {
         let mut opts = RequestOptions::default();
         opts.require_login = true;
         opts.credential = credential.cloned();
@@ -821,10 +793,12 @@ impl SongApi {
             .await
     }
 
-    /// 获取播放链接 (官方桌面端 `music.vkey.GetVkey / GetUrl`, 用于下载).
+    /// ⚠️ **Raw 透传** — 获取播放链接
+    /// (官方桌面端 `music.vkey.GetVkey / GetUrl`, 用于下载).
     ///
-    /// `param` 通常形如 `{"songmid": ["xxx"], "songtype": [0]}`.
-    pub async fn get_url_vkey(&self, param: Value) -> Result<Value> {
+    /// `param` 通常形如 `{"songmid": ["xxx"], "songtype": [0]}`;
+    /// 播放链接请优先使用类型化的 `get_song_urls`.
+    pub async fn raw_get_url_vkey(&self, param: Value) -> Result<Value> {
         let base = json!({
             "uin": self.base.credential().str_musicid(),
             "guid": "5640789320",

@@ -1,4 +1,9 @@
-//! 多账号凭证管理: 持久化 + 过期自动刷新.
+//! 多账号凭证管理: 持久化 (可插拔后端) + 过期自动刷新.
+//!
+//! `CredentialStore` 本身不决定凭证如何落盘: 持久化委托给
+//! [`CredentialPersist`] 后端, 由宿主实现. 仓库内置
+//! [`FileCredentialPersist`] 仅为开发便利 (明文 JSON), **不适合生产**;
+//! 生产环境请实现安全存储后端 (系统 Keychain / 加密文件 / TPM 等).
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -10,7 +15,7 @@ use crate::models::Credential;
 use crate::Client;
 
 /// 持久化的账号表.
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct Store {
     #[serde(default)]
     accounts: BTreeMap<i64, Credential>,
@@ -18,78 +23,152 @@ struct Store {
     current: Option<i64>,
 }
 
+/// 凭证持久化后端.
+///
+/// 由宿主实现, 例如使用系统安全存储 / Keychain / 加密文件. 默认的
+/// [`FileCredentialPersist`] 为明文 JSON, 仅适合开发环境.
+pub trait CredentialPersist: Send + Sync + std::fmt::Debug {
+    /// 读取序列化数据 (文件不存在时返回 `Ok(None)`).
+    fn load(&self) -> Result<Option<String>>;
+    /// 写入序列化数据.
+    fn save(&self, data: &str) -> Result<()>;
+}
+
+/// 明文 JSON 文件后端 (仅开发环境).
+///
+/// 凭证以明文 JSON 落盘, **不应**用于生产环境的账号存储.
+#[derive(Debug, Clone)]
+pub struct FileCredentialPersist {
+    path: std::path::PathBuf,
+}
+
+impl FileCredentialPersist {
+    /// 指定持久化文件路径.
+    pub fn new(path: &Path) -> Self {
+        FileCredentialPersist {
+            path: path.to_path_buf(),
+        }
+    }
+
+    /// 当前持久化路径.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl CredentialPersist for FileCredentialPersist {
+    fn load(&self) -> Result<Option<String>> {
+        match std::fs::read_to_string(&self.path) {
+            Ok(text) => Ok(Some(text)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(QmError::Io(e.to_string())),
+        }
+    }
+
+    fn save(&self, data: &str) -> Result<()> {
+        if let Some(parent) = self.path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&self.path, data).map_err(QmError::from)
+    }
+}
+
 /// 多账号凭证管理器.
 ///
 /// - 按 `musicid` 区分账号.
-/// - `save` / `load` 持久化到磁盘 (JSON).
+/// - 持久化通过可插拔的 [`CredentialPersist`] 后端 (默认文件明文后端仅开发用).
 /// - `refresh_current` 在凭证过期时通过 `login.refresh_credential` 自动刷新.
+///
+/// 出于安全考虑, `Credential` 的 `Debug` 已对令牌字段做 redaction;
+/// 生产环境的账号存储应由宿主自行实现安全后端.
 #[derive(Debug)]
 pub struct CredentialStore {
     store: Mutex<Store>,
-    path: Option<std::path::PathBuf>,
+    backend: Option<Box<dyn CredentialPersist>>,
 }
 
 impl Default for CredentialStore {
     fn default() -> Self {
         CredentialStore {
             store: Mutex::new(Store::default()),
-            path: None,
+            backend: None,
         }
     }
 }
 
 impl CredentialStore {
-    /// 创建空凭证库.
+    /// 创建空凭证库 (仅内存, 不持久化).
     pub fn new() -> Self {
         CredentialStore::default()
     }
 
-    /// 从文件加载凭证库.
+    /// 从文件加载凭证库 (同时使用该文件作为持久化后端).
     pub fn load(path: &Path) -> Result<Self> {
-        let text = std::fs::read_to_string(path).map_err(|e| QmError::Io(e.to_string()))?;
-        let store: Store = serde_json::from_str(&text).map_err(QmError::from)?;
+        Self::from_backend(FileCredentialPersist::new(path))
+    }
+
+    /// 从自定义持久化后端加载凭证库.
+    ///
+    /// 后端已有数据时恢复; 无数据时得到空库. 后续变更自动写入该后端.
+    pub fn from_backend(backend: impl CredentialPersist + 'static) -> Result<Self> {
+        let backend = Box::new(backend);
+        let store = match backend.load()? {
+            Some(text) => serde_json::from_str(&text).map_err(QmError::from)?,
+            None => Store::default(),
+        };
         Ok(CredentialStore {
             store: Mutex::new(store),
-            path: Some(path.to_path_buf()),
+            backend: Some(backend),
         })
     }
 
-    /// 设置持久化路径 (后续 `save` 自动写入).
-    pub fn with_path(mut self, path: &Path) -> Self {
-        self.path = Some(path.to_path_buf());
+    /// 使用自定义持久化后端 (空库开始, 后续变更自动写入该后端).
+    pub fn with_backend(mut self, backend: impl CredentialPersist + 'static) -> Self {
+        self.backend = Some(Box::new(backend));
         self
     }
 
-    /// 持久化到磁盘 (需先设置 path).
+    /// 设置明文文件持久化后端 (后续 `save` 自动写入).
+    ///
+    /// 注意: 明文 JSON 仅适合开发环境.
+    pub fn with_path(mut self, path: &Path) -> Self {
+        self.backend = Some(Box::new(FileCredentialPersist::new(path)));
+        self
+    }
+
+    /// 主动持久化到后端 (需先设置 `with_path` / `with_backend`).
     pub fn save(&self) -> Result<()> {
-        let path = self.path.as_ref().ok_or_else(|| QmError::ValueError("未设置持久化路径".into()))?;
-        let store = self.store.lock().unwrap();
-        let bytes = serde_json::to_vec_pretty(&*store).map_err(QmError::from)?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+        let store = self.store.lock().unwrap().clone();
+        let data = serde_json::to_string_pretty(&store).map_err(QmError::from)?;
+        if let Some(backend) = &self.backend {
+            backend.save(&data)?;
         }
-        std::fs::write(path, bytes).map_err(QmError::from)
+        Ok(())
     }
 
     /// 添加或更新账号; 若库为空则自动设为当前账号.
     pub fn add(&self, credential: Credential) -> Result<()> {
-        let mut store = self.store.lock().unwrap();
-        if store.accounts.is_empty() {
-            store.current = Some(credential.musicid);
+        {
+            let mut store = self.store.lock().unwrap();
+            if store.accounts.is_empty() {
+                store.current = Some(credential.musicid);
+            }
+            store.accounts.insert(credential.musicid, credential);
         }
-        store.accounts.insert(credential.musicid, credential);
-        self.persist(&store)?;
-        Ok(())
+        self.persist()
     }
 
     /// 移除账号.
     pub fn remove(&self, musicid: i64) -> Result<bool> {
-        let mut store = self.store.lock().unwrap();
-        let removed = store.accounts.remove(&musicid).is_some();
-        if store.current == Some(musicid) {
-            store.current = store.accounts.keys().next().copied();
-        }
-        self.persist(&store)?;
+        let removed = {
+            let mut store = self.store.lock().unwrap();
+            let removed = store.accounts.remove(&musicid).is_some();
+            if store.current == Some(musicid) {
+                store.current = store.accounts.keys().next().copied();
+            }
+            removed
+        };
+        self.persist()?;
         Ok(removed)
     }
 
@@ -106,13 +185,14 @@ impl CredentialStore {
 
     /// 设置当前账号.
     pub fn set_current(&self, musicid: i64) -> Result<()> {
-        let mut store = self.store.lock().unwrap();
-        if !store.accounts.contains_key(&musicid) {
-            return Err(QmError::ValueError(format!("账号 {musicid} 不存在")));
+        {
+            let mut store = self.store.lock().unwrap();
+            if !store.accounts.contains_key(&musicid) {
+                return Err(QmError::ValueError(format!("账号 {musicid} 不存在")));
+            }
+            store.current = Some(musicid);
         }
-        store.current = Some(musicid);
-        self.persist(&store)?;
-        Ok(())
+        self.persist()
     }
 
     /// 所有账号的 musicid 列表.
@@ -131,9 +211,11 @@ impl CredentialStore {
             .get(musicid)
             .ok_or_else(|| QmError::CredentialInvalid(format!("账号 {musicid} 不存在")))?;
         let refreshed = client.login.refresh_credential(Some(&credential)).await?;
-        let mut store = self.store.lock().unwrap();
-        store.accounts.insert(musicid, refreshed.clone());
-        self.persist(&store)?;
+        {
+            let mut store = self.store.lock().unwrap();
+            store.accounts.insert(musicid, refreshed.clone());
+        }
+        self.persist()?;
         Ok(refreshed)
     }
 
@@ -163,13 +245,11 @@ impl CredentialStore {
         Ok(())
     }
 
-    fn persist(&self, store: &Store) -> Result<()> {
-        if let Some(path) = &self.path {
-            let bytes = serde_json::to_vec_pretty(store).map_err(QmError::from)?;
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            std::fs::write(path, bytes).map_err(QmError::from)?;
+    fn persist(&self) -> Result<()> {
+        let store = self.store.lock().unwrap().clone();
+        let data = serde_json::to_string_pretty(&store).map_err(QmError::from)?;
+        if let Some(backend) = &self.backend {
+            backend.save(&data)?;
         }
         Ok(())
     }
@@ -243,5 +323,43 @@ mod tests {
         };
         store.add(cred2).unwrap();
         assert!(!store.is_expired(2));
+    }
+
+    #[test]
+    fn custom_backend_is_used() {
+        let backend = InMemoryBackend::default();
+        let store = CredentialStore::new().with_backend(backend.clone());
+        store
+            .add(Credential {
+                musicid: 7,
+                str_musicid: "7".into(),
+                musickey: "secret".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        // 数据写入后端 (而非文件).
+        let data = backend.inner.lock().unwrap().clone().unwrap();
+        assert!(data.contains("secret"));
+
+        // 从后端数据恢复.
+        let loaded = CredentialStore::from_backend(backend).unwrap();
+        assert_eq!(loaded.get(7).map(|c| c.musickey), Some("secret".into()));
+    }
+
+    /// 内存后端 (测试用).
+    #[derive(Debug, Clone, Default)]
+    struct InMemoryBackend {
+        inner: std::sync::Arc<Mutex<Option<String>>>,
+    }
+
+    impl CredentialPersist for InMemoryBackend {
+        fn load(&self) -> Result<Option<String>> {
+            Ok(self.inner.lock().unwrap().clone())
+        }
+
+        fn save(&self, data: &str) -> Result<()> {
+            *self.inner.lock().unwrap() = Some(data.to_string());
+            Ok(())
+        }
     }
 }

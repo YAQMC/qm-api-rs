@@ -69,8 +69,8 @@ println!("可用 CDN: {:?}", cdn.sip);
 ## 曲谱
 
 ```rust
-// ttype: 0=用户上传, 1=引擎/AI 曲谱, 2=虫虫钢琴
-let sheets = client.song.get_sheet(&song.mid, 0).await?;
+// SheetType::User(0) / EngineAi(1) / ChongChong(2)
+let sheets = client.song.get_sheet(&song.mid, qqmusic_api::SheetType::User).await?;
 println!("曲谱数量: {}", sheets.result.len());
 
 let has = client.song.has_sheet(&song.mid).await?;
@@ -148,15 +148,22 @@ let is_vip = client.user.is_vip(Some(&credential)).await?;
 let qualities = client.song.available_qualities(&song);
 //   如 [Master, Atmos2, Flac, Ogg320, Mp3_320, ...]
 
-// 3. 获取最高可用音质播放链接
+// 3a. 播放器路径: 获取来源描述 MediaSource (URL + 元数据, 不下载不解密)
 //   allow_encrypted=true: 走 CgiGetEVkey, 返回 .mflac/.mgg + ekey
+let source = client
+    .song
+    .media_source(&song, Some(&credential), true)
+    .await?;
+//   source.url: 可直接请求的播放地址; source.ekey / source.encrypted: 供流式解密
+//   source.result = 104003 时表示无播放权限, url 为空
+
+// 3b. 或获取原始响应
 let (quality, urls) = client
     .song
     .get_best_song_url(&song, Some(&credential), true)
     .await?;
-//   无权限时 item.result = 104003, purl 为空
 
-// 4. 下载 + QMC 解密 (VIP 完整流程)
+// 4. 媒体层助手: 下载 + QMC 解密 (CLI 下载器 / 非播放链路)
 let (audio, ext) = client
     .song
     .download_quality(&song, quality, Some(&credential))
