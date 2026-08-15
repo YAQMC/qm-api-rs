@@ -147,7 +147,9 @@ impl UploadFileSession {
 
         let auth = &init.auth_info;
         if init.files.len() != file_paths.len() {
-            return Err(QmError::ValueError("InitUpload 返回的文件目标数量不匹配".into()));
+            return Err(QmError::ValueError(
+                "InitUpload 返回的文件目标数量不匹配".into(),
+            ));
         }
         if auth.secret_id.is_empty() || auth.secret_key.is_empty() || auth.token.is_empty() {
             return Err(QmError::ApiData("获取上传凭证失败: 凭证信息不完整".into()));
@@ -156,15 +158,21 @@ impl UploadFileSession {
         let mut finish_results = Vec::with_capacity(file_paths.len());
         for (i, file_info) in init.files.iter().enumerate() {
             let buckets = &file_info.buckets;
-            let target = buckets
-                .first()
-                .ok_or_else(|| QmError::ApiData(format!("文件 {} 未返回目标存储桶信息", file_paths[i].display())))?;
+            let target = buckets.first().ok_or_else(|| {
+                QmError::ApiData(format!(
+                    "文件 {} 未返回目标存储桶信息",
+                    file_paths[i].display()
+                ))
+            })?;
             let bucket_name = &target.bucket.name;
             let region = &target.bucket.region;
             let object_key = &file_info.object_key;
 
             if bucket_name.is_empty() || region.is_empty() || object_key.is_empty() {
-                return Err(QmError::ApiData(format!("文件 {} 上传凭证信息不完整", file_paths[i].display())));
+                return Err(QmError::ApiData(format!(
+                    "文件 {} 上传凭证信息不完整",
+                    file_paths[i].display()
+                )));
             }
 
             if target.upload_status != 1 {
@@ -198,7 +206,9 @@ impl UploadFileSession {
             .api
             .finish_upload(&self.bus_id, &finish_results, self.credential.as_ref())
             .await?;
-        finish.objects.ok_or_else(|| QmError::ApiData("FinishUpload 未返回上传成功的文件对象".into()))
+        finish
+            .objects
+            .ok_or_else(|| QmError::ApiData("FinishUpload 未返回上传成功的文件对象".into()))
     }
 }
 
@@ -213,6 +223,7 @@ fn now_secs() -> i64 {
 ///
 /// 签名采用 QCloud 旧版 `q-sign-algorithm=sha1` 方案 (与官方桌面客户端一致).
 /// `http` 复用客户端的统一 HTTP 客户端 (共享代理/限流配置).
+#[allow(clippy::too_many_arguments)]
 async fn put_object(
     http: &reqwest::Client,
     file_path: &Path,

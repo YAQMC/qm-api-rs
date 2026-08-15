@@ -67,7 +67,14 @@ impl MvApi {
     }
 
     /// 获取 MV 分类列表.
-    pub async fn get_mv_list(&self, area: i64, version: i64, order: i64, num: i64, page: i64) -> Result<GetMvListResponse> {
+    pub async fn get_mv_list(
+        &self,
+        area: i64,
+        version: i64,
+        order: i64,
+        num: i64,
+        page: i64,
+    ) -> Result<GetMvListResponse> {
         let data = self
             .base
             .cgi(

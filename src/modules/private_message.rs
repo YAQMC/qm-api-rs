@@ -62,7 +62,12 @@ impl PrivateMessageApi {
         }
         let data = self
             .base
-            .cgi(PRIVATE_MSG_READ_MODULE, "GetSessionList", params, self.opts(credential))
+            .cgi(
+                PRIVATE_MSG_READ_MODULE,
+                "GetSessionList",
+                params,
+                self.opts(credential),
+            )
             .await?;
         Ok(serde_json::from_value(data)?)
     }
@@ -128,7 +133,12 @@ impl PrivateMessageApi {
         }
         let data = self
             .base
-            .cgi(PRIVATE_MSG_READ_MODULE, "GetMessage", params, self.opts(credential))
+            .cgi(
+                PRIVATE_MSG_READ_MODULE,
+                "GetMessage",
+                params,
+                self.opts(credential),
+            )
             .await?;
         Ok(serde_json::from_value(data)?)
     }
@@ -180,10 +190,19 @@ impl PrivateMessageApi {
         if let Some(smf) = super_msg_flag {
             params["super_msg_flag"] = json!(smf);
         }
-        let method = if star_send { "StarSendSuperMsg" } else { "SendMessageAsync" };
+        let method = if star_send {
+            "StarSendSuperMsg"
+        } else {
+            "SendMessageAsync"
+        };
         let data = self
             .base
-            .cgi(PRIVATE_MSG_WRITE_MODULE, method, params, self.opts(credential))
+            .cgi(
+                PRIVATE_MSG_WRITE_MODULE,
+                method,
+                params,
+                self.opts(credential),
+            )
             .await?;
         Ok(serde_json::from_value(data)?)
     }
@@ -247,7 +266,12 @@ impl PrivateMessageApi {
     }
 
     /// 读取私信配置.
-    pub async fn get_config(&self, config_type: i64, config_value: &str, credential: Option<&Credential>) -> Result<PrivateConfigResponse> {
+    pub async fn get_config(
+        &self,
+        config_type: i64,
+        config_value: &str,
+        credential: Option<&Credential>,
+    ) -> Result<PrivateConfigResponse> {
         let data = self
             .base
             .cgi(
@@ -299,7 +323,12 @@ impl PrivateMessageApi {
         }
         let data = self
             .base
-            .cgi(PRIVATE_MSG_WRITE_MODULE, "ActCardMsgCallBack", params, self.opts(credential))
+            .cgi(
+                PRIVATE_MSG_WRITE_MODULE,
+                "ActCardMsgCallBack",
+                params,
+                self.opts(credential),
+            )
             .await?;
         Ok(serde_json::from_value(data)?)
     }
@@ -326,7 +355,12 @@ impl PrivateMessageApi {
         }
         let data = self
             .base
-            .cgi(PRIVATE_MSG_READ_MODULE, "GetEntries", Value::Object(params), self.opts(credential))
+            .cgi(
+                PRIVATE_MSG_READ_MODULE,
+                "GetEntries",
+                Value::Object(params),
+                self.opts(credential),
+            )
             .await?;
         Ok(serde_json::from_value(data)?)
     }
@@ -391,7 +425,11 @@ impl PrivateMessageApi {
     /// ⚠️ **Raw 透传** — 获取聊天页好友浮标.
     ///
     /// 响应 schema 未经 live 验证, 仅提供透传能力.
-    pub async fn raw_get_friendship_badge(&self, target_enc_uin: &str, credential: Option<&Credential>) -> Result<Value> {
+    pub async fn raw_get_friendship_badge(
+        &self,
+        target_enc_uin: &str,
+        credential: Option<&Credential>,
+    ) -> Result<Value> {
         self.base
             .cgi(
                 "music.dazi.DzEntrySrv",

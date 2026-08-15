@@ -62,7 +62,9 @@ impl LoginApi {
         let CgiReply { code, data } = reply;
         match code {
             0 => serde_json::from_value(data).map_err(QmError::from),
-            1000 | 104401 | 104400 => Err(QmError::CredentialExpired(format!("登录鉴权参数无效或已过期 (code {code})"))),
+            1000 | 104401 | 104400 => Err(QmError::CredentialExpired(format!(
+                "登录鉴权参数无效或已过期 (code {code})"
+            ))),
             20261 => Err(QmError::Login {
                 message: "登录参数错误".into(),
                 code,
@@ -96,7 +98,10 @@ impl LoginApi {
                 code,
             }),
             _ => Err(QmError::Login {
-                message: format!("登录失败: {}", crate::error::redact_payload(&data.to_string(), 200)),
+                message: format!(
+                    "登录失败: {}",
+                    crate::error::redact_payload(&data.to_string(), 200)
+                ),
                 code,
             }),
         }
@@ -104,11 +109,16 @@ impl LoginApi {
 
     /// 检查登录凭证是否已过期.
     pub async fn check_expired(&self, credential: Option<&Credential>) -> Result<bool> {
-        let target = credential.cloned().unwrap_or_else(|| self.base.credential());
+        let target = credential
+            .cloned()
+            .unwrap_or_else(|| self.base.credential());
         if self.base.context.platform == Platform::Web {
             let opts = crate::client::HttpOptions {
                 params: vec![
-                    ("g_tk".to_string(), hash33(&target.musickey, 5381).to_string()),
+                    (
+                        "g_tk".to_string(),
+                        hash33(&target.musickey, 5381).to_string(),
+                    ),
                     ("format".to_string(), "json".to_string()),
                     ("inCharset".to_string(), "utf-8".to_string()),
                     ("outCharset".to_string(), "utf-8".to_string()),
@@ -141,14 +151,21 @@ impl LoginApi {
         opts.credential = Some(target);
         let reply = self
             .base
-            .cgi_reply("music.UserInfo.userInfoServer", "GetLoginUserInfo", json!({}), opts)
+            .cgi_reply(
+                "music.UserInfo.userInfoServer",
+                "GetLoginUserInfo",
+                json!({}),
+                opts,
+            )
             .await?;
         Ok(reply.code != 0)
     }
 
     /// 尝试刷新登录凭证.
     pub async fn refresh_credential(&self, credential: Option<&Credential>) -> Result<Credential> {
-        let target = credential.cloned().unwrap_or_else(|| self.base.credential());
+        let target = credential
+            .cloned()
+            .unwrap_or_else(|| self.base.credential());
         let param = match target.login_type {
             1 => json!({
                 "openid": target.openid,
@@ -190,7 +207,9 @@ impl LoginApi {
             .cgi_reply("music.login.LoginServer", "Login", param, opts)
             .await?;
         Self::validate_result(reply).map_err(|e| match e {
-            QmError::Login { message, code } => QmError::CredentialRefresh(format!("{message} (code {code})")),
+            QmError::Login { message, code } => {
+                QmError::CredentialRefresh(format!("{message} (code {code})"))
+            }
             other => other,
         })
     }
@@ -260,7 +279,10 @@ impl LoginApi {
         if qrsig.is_empty() {
             return Err(QmError::ApiData("获取 qrsig 失败".into()));
         }
-        let bytes = resp.bytes().await.map_err(|e| QmError::Network(e.to_string()))?;
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|e| QmError::Network(e.to_string()))?;
         Ok(QR {
             data: bytes.to_vec(),
             qr_type: QRLoginType::Qq,
@@ -286,13 +308,20 @@ impl LoginApi {
             ),
         ];
         let opts = crate::client::HttpOptions {
-            params: params.into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            params: params
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
             ..Default::default()
         };
         let text = self
             .base
             .context
-            .request_http(reqwest::Method::GET, "https://open.weixin.qq.com/connect/qrconnect", &opts)
+            .request_http(
+                reqwest::Method::GET,
+                "https://open.weixin.qq.com/connect/qrconnect",
+                &opts,
+            )
             .await?;
         // 提取 uuid="..."
         let uuid = extract_between(&text, "uuid=", "\"");
@@ -302,7 +331,9 @@ impl LoginApi {
                 let mut h = reqwest::header::HeaderMap::new();
                 h.insert(
                     "Referer",
-                    reqwest::header::HeaderValue::from_static("https://open.weixin.qq.com/connect/qrconnect"),
+                    reqwest::header::HeaderValue::from_static(
+                        "https://open.weixin.qq.com/connect/qrconnect",
+                    ),
                 );
                 h
             },
@@ -363,7 +394,9 @@ impl LoginApi {
     pub async fn check_qrcode(&self, qrcode: &QR) -> Result<QRLoginResult> {
         match qrcode.qr_type {
             QRLoginType::Wx => self.check_wx_qr(qrcode).await,
-            QRLoginType::Mobile => Err(QmError::ApiData("手机客户端二维码状态需要 MQTT, 请使用 checking_mobile_qrcode".into())),
+            QRLoginType::Mobile => Err(QmError::ApiData(
+                "手机客户端二维码状态需要 MQTT, 请使用 checking_mobile_qrcode".into(),
+            )),
             QRLoginType::Qq => self.check_qq_qr(qrcode).await,
         }
     }
@@ -377,7 +410,11 @@ impl LoginApi {
     /// Args:
     ///     qrcode: 由 `get_qrcode(QRLoginType::Mobile)` 获取的二维码对象.
     ///     timeout: 单次消息等待超时; 超时产出 `TIMEOUT` 事件后结束.
-    pub async fn checking_mobile_qrcode(&self, qrcode: &QR, timeout: std::time::Duration) -> Result<Vec<QRLoginResult>> {
+    pub async fn checking_mobile_qrcode(
+        &self,
+        qrcode: &QR,
+        timeout: std::time::Duration,
+    ) -> Result<Vec<QRLoginResult>> {
         use crate::mqtt::{MqttClient, MqttProperties};
         use rand::Rng;
 
@@ -419,7 +456,8 @@ impl LoginApi {
         .map_err(|e| QmError::Network(format!("MQTT 连接失败: {e}")))?;
 
         let topic = format!("management.qrcode_login/{qrcode_id}");
-        let sub_props = MqttProperties::default().user_property(&[("authorization", "tmelogin"), ("pubsub", "unicast")]);
+        let sub_props = MqttProperties::default()
+            .user_property(&[("authorization", "tmelogin"), ("pubsub", "unicast")]);
         client.subscribe(&topic, &sub_props).await?;
 
         let mut events = vec![QRLoginResult {
@@ -438,7 +476,9 @@ impl LoginApi {
                     if let Some(item) = item {
                         let terminal = matches!(
                             item.event,
-                            QRCodeLoginEvents::Done | QRCodeLoginEvents::Refuse | QRCodeLoginEvents::Timeout
+                            QRCodeLoginEvents::Done
+                                | QRCodeLoginEvents::Refuse
+                                | QRCodeLoginEvents::Timeout
                         );
                         events.push(item);
                         if terminal {
@@ -484,7 +524,8 @@ impl LoginApi {
                 code: -1,
             }),
             Some("cookies") => {
-                let payload = payload.ok_or_else(|| QmError::ApiData("无效的 MQTT 消息格式".into()))?;
+                let payload =
+                    payload.ok_or_else(|| QmError::ApiData("无效的 MQTT 消息格式".into()))?;
                 let cookies = &payload["cookies"];
                 let uin = cookies["qqmusic_uin"]["value"].as_str().unwrap_or("");
                 let key = cookies["qqmusic_key"]["value"].as_str().unwrap_or("");
@@ -522,7 +563,10 @@ impl LoginApi {
         let ptqrtoken_str = ptqrtoken.to_string();
         let action = format!("0-0-{}", now_ms());
         let params: Vec<(String, String)> = vec![
-            ("u1".to_string(), "https://graph.qq.com/oauth2.0/login_jump".to_string()),
+            (
+                "u1".to_string(),
+                "https://graph.qq.com/oauth2.0/login_jump".to_string(),
+            ),
             ("ptqrtoken".to_string(), ptqrtoken_str),
             ("ptredirect".to_string(), "0".to_string()),
             ("h".to_string(), "1".to_string()),
@@ -549,7 +593,11 @@ impl LoginApi {
         let text = self
             .base
             .context
-            .request_http(reqwest::Method::GET, "https://ssl.ptlogin2.qq.com/ptqrlogin", &opts)
+            .request_http(
+                reqwest::Method::GET,
+                "https://ssl.ptlogin2.qq.com/ptqrlogin",
+                &opts,
+            )
             .await?;
 
         let body = extract_between(&text, "ptuiCB(", ")").unwrap_or_default();
@@ -557,7 +605,9 @@ impl LoginApi {
         if args.is_empty() {
             return Err(QmError::ApiData("获取二维码状态失败: 无法解析响应".into()));
         }
-        let code = args[0].parse::<i64>().map_err(|_| QmError::ApiData("无效的状态码".into()))?;
+        let code = args[0]
+            .parse::<i64>()
+            .map_err(|_| QmError::ApiData("无效的状态码".into()))?;
         let event = QRCodeLoginEvents::get_by_value(code)
             .ok_or_else(|| QmError::ApiData(format!("无法识别的状态码: {code}")))?;
         if event != QRCodeLoginEvents::Done {
@@ -572,7 +622,9 @@ impl LoginApi {
         let sigx = extract_between(&args[2], "ptsigx=", "&s_url").unwrap_or_default();
         let uin = extract_between(&args[2], "uin=", "&service").unwrap_or_default();
         if sigx.is_empty() || uin.is_empty() {
-            return Err(QmError::ApiData("获取登录凭据失败: 无法解析必要参数".into()));
+            return Err(QmError::ApiData(
+                "获取登录凭据失败: 无法解析必要参数".into(),
+            ));
         }
         let credential = self.authorize_qq_qr(&uin, &sigx).await?;
         Ok(QRLoginResult {
@@ -584,10 +636,16 @@ impl LoginApi {
     async fn check_wx_qr(&self, qrcode: &QR) -> Result<QRLoginResult> {
         let uuid = qrcode.identifier.clone();
         let opts = crate::client::HttpOptions {
-            params: vec![("uuid".to_string(), uuid.clone()), ("_".to_string(), now_ms().to_string())],
+            params: vec![
+                ("uuid".to_string(), uuid.clone()),
+                ("_".to_string(), now_ms().to_string()),
+            ],
             headers: {
                 let mut h = reqwest::header::HeaderMap::new();
-                h.insert("Referer", reqwest::header::HeaderValue::from_static("https://open.weixin.qq.com/"));
+                h.insert(
+                    "Referer",
+                    reqwest::header::HeaderValue::from_static("https://open.weixin.qq.com/"),
+                );
                 h
             },
             timeout: Some(std::time::Duration::from_secs(35)),
@@ -660,7 +718,10 @@ impl LoginApi {
             "Referer",
             reqwest::header::HeaderValue::from_static("https://xui.ptlogin2.qq.com/"),
         );
-        opts.params = params.into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        opts.params = params
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
 
         // 使用 reqwest `.query()` 进行正确的 URL 编码 (ptsigx 等含保留字符).
         self.base.context.limiter.acquire().await;
@@ -723,7 +784,12 @@ impl LoginApi {
         opts.comm = Some(json!({ "tmeLoginType": 2 }));
         let reply = self
             .base
-            .cgi_reply("QQConnectLogin.LoginServer", "QQLogin", json!({ "code": code }), opts)
+            .cgi_reply(
+                "QQConnectLogin.LoginServer",
+                "QQLogin",
+                json!({ "code": code }),
+                opts,
+            )
             .await?;
         Self::validate_result(reply)
     }
@@ -745,7 +811,12 @@ impl LoginApi {
     }
 
     /// 发送手机验证码.
-    pub async fn send_authcode(&self, phone: &str, is_encrypted: bool, country_code: i64) -> Result<PhoneAuthCodeResult> {
+    pub async fn send_authcode(
+        &self,
+        phone: &str,
+        is_encrypted: bool,
+        country_code: i64,
+    ) -> Result<PhoneAuthCodeResult> {
         let mut param = json!({ "tmeAppid": "qqmusic", "areaCode": country_code.to_string() });
         if is_encrypted {
             param["encryptedPhoneNo"] = json!(phone);
@@ -784,7 +855,12 @@ impl LoginApi {
     }
 
     /// 使用手机验证码鉴权.
-    pub async fn phone_authorize(&self, phone: &str, is_encrypted: bool, auth_code: &str) -> Result<Credential> {
+    pub async fn phone_authorize(
+        &self,
+        phone: &str,
+        is_encrypted: bool,
+        auth_code: &str,
+    ) -> Result<Credential> {
         let mut param = json!({ "code": auth_code, "loginMode": 1 });
         if is_encrypted {
             param["encryptedPhoneNo"] = json!(phone);
@@ -803,7 +879,7 @@ impl LoginApi {
 }
 
 /// 从字符串中提取两个标记之间的内容.
-fn extract_between<'a>(text: &'a str, start: &str, end: &str) -> Option<String> {
+fn extract_between(text: &str, start: &str, end: &str) -> Option<String> {
     let idx = text.find(start)?;
     let rest = &text[idx + start.len()..];
     let end_idx = rest.find(end)?;

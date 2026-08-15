@@ -78,7 +78,10 @@ impl ApiModule {
         param: Value,
         opts: RequestOptions,
     ) -> Result<Value> {
-        let reply = self.context.request_cgi(module, method, param, &opts).await?;
+        let reply = self
+            .context
+            .request_cgi(module, method, param, &opts)
+            .await?;
         reply.require_success()
     }
 

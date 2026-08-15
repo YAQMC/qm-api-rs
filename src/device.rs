@@ -91,19 +91,14 @@ pub struct Device {
     pub qimei: Option<String>,
     pub qimei36: Option<String>,
     pub qimei_save_time: Option<i64>,
-    pub session_uid: Option<String>,
-    pub session_sid: Option<String>,
-    pub session_vkey: Option<String>,
-    /// session 所属账号 musicid (确保 session 与请求账号一致).
-    #[serde(default)]
-    pub session_musicid: Option<i64>,
-    pub session_save_time: Option<i64>,
     pub open_udid: String,
 }
 
 fn rand_hex(n: usize) -> String {
     let mut rng = rand::thread_rng();
-    (0..n).map(|_| format!("{:x}", rng.gen_range(0..16))).collect()
+    (0..n)
+        .map(|_| format!("{:x}", rng.gen_range(0..16)))
+        .collect()
 }
 
 impl Device {
@@ -146,11 +141,6 @@ impl Device {
             qimei: None,
             qimei36: None,
             qimei_save_time: None,
-            session_uid: None,
-            session_sid: None,
-            session_vkey: None,
-            session_musicid: None,
-            session_save_time: None,
             open_udid: Uuid::new_v4().simple().to_string(),
         }
     }

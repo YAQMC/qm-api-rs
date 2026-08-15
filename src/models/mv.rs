@@ -3,7 +3,7 @@
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::base::{MV, Singer};
+use super::base::{Singer, MV};
 use crate::jsonpath_model;
 
 /// MV 详情条目.

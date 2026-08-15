@@ -59,7 +59,11 @@ impl Lyric {
             out.push_str(&format!("[offset:{off}]\n"));
         }
         for line in &self.lines {
-            out.push_str(&format!("[{}]{}\n", ms_to_lrc_time(line.time_ms), line.text));
+            out.push_str(&format!(
+                "[{}]{}\n",
+                ms_to_lrc_time(line.time_ms),
+                line.text
+            ));
         }
         out
     }
@@ -239,8 +243,14 @@ pub fn parse_qrc(text: &str) -> QrcLyric {
             };
             let range = &rest[..close];
             let mut parts = range.split(',');
-            let start: i64 = parts.next().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
-            let end: i64 = parts.next().and_then(|s| s.trim().parse().ok()).unwrap_or(start);
+            let start: i64 = parts
+                .next()
+                .and_then(|s| s.trim().parse().ok())
+                .unwrap_or(0);
+            let end: i64 = parts
+                .next()
+                .and_then(|s| s.trim().parse().ok())
+                .unwrap_or(start);
             let body = &rest[close + 1..];
 
             // 解析 word(dur) 序列.
@@ -305,7 +315,10 @@ mod tests {
         assert_eq!(lyric.lines[0].time_ms, 0);
         assert_eq!(lyric.lines[1].time_ms, 2250);
         assert_eq!(lyric.lines[2].time_ms, 6750);
-        assert_eq!(lyric.line_at(3000).map(|l| l.text.as_str()), Some("词：周杰伦"));
+        assert_eq!(
+            lyric.line_at(3000).map(|l| l.text.as_str()),
+            Some("词：周杰伦")
+        );
     }
 
     #[test]

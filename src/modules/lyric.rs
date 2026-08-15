@@ -52,13 +52,21 @@ impl LyricApi {
         opts.preserve_bool = true;
         let data = self
             .base
-            .cgi("music.musichallSong.PlayLyricInfo", "GetPlayLyricInfo", params, opts)
+            .cgi(
+                "music.musichallSong.PlayLyricInfo",
+                "GetPlayLyricInfo",
+                params,
+                opts,
+            )
             .await?;
         Ok(GetLyricResponse::parse(data)?)
     }
 
     /// 获取助唱标注歌词信息.
-    pub async fn get_singing_annotations_info(&self, songid: i64) -> Result<GetSingingAnnotationsInfoResponse> {
+    pub async fn get_singing_annotations_info(
+        &self,
+        songid: i64,
+    ) -> Result<GetSingingAnnotationsInfoResponse> {
         let mut opts = RequestOptions::default();
         opts.preserve_bool = true;
         let data = self
@@ -74,7 +82,10 @@ impl LyricApi {
     }
 
     /// 获取多风格翻译歌词 (如诗意、粤语、方言等).
-    pub async fn get_multi_style_trans_lyric(&self, songid: i64) -> Result<BatchGetMultiStyleTransLyricResponse> {
+    pub async fn get_multi_style_trans_lyric(
+        &self,
+        songid: i64,
+    ) -> Result<BatchGetMultiStyleTransLyricResponse> {
         let data = self
             .base
             .cgi(

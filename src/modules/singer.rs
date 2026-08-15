@@ -131,7 +131,12 @@ impl SingerApi {
     }
 
     /// 获取歌手列表原始数据.
-    pub async fn get_singer_list(&self, area: i64, sex: i64, genre: i64) -> Result<SingerTypeListResponse> {
+    pub async fn get_singer_list(
+        &self,
+        area: i64,
+        sex: i64,
+        genre: i64,
+    ) -> Result<SingerTypeListResponse> {
         let data = self
             .base
             .cgi(
@@ -261,7 +266,12 @@ impl SingerApi {
     }
 
     /// 获取歌手的歌曲列表.
-    pub async fn get_songs_list(&self, mid: &str, num: i64, page: i64) -> Result<SingerSongListResponse> {
+    pub async fn get_songs_list(
+        &self,
+        mid: &str,
+        num: i64,
+        page: i64,
+    ) -> Result<SingerSongListResponse> {
         let data = self
             .base
             .cgi(
@@ -275,7 +285,12 @@ impl SingerApi {
     }
 
     /// 获取歌手的专辑列表.
-    pub async fn get_album_list(&self, mid: &str, num: i64, page: i64) -> Result<SingerAlbumListResponse> {
+    pub async fn get_album_list(
+        &self,
+        mid: &str,
+        num: i64,
+        page: i64,
+    ) -> Result<SingerAlbumListResponse> {
         let data = self
             .base
             .cgi(
@@ -289,7 +304,12 @@ impl SingerApi {
     }
 
     /// 获取歌手 MV 列表数据.
-    pub async fn get_mv_list(&self, mid: &str, num: i64, page: i64) -> Result<SingerMvListResponse> {
+    pub async fn get_mv_list(
+        &self,
+        mid: &str,
+        num: i64,
+        page: i64,
+    ) -> Result<SingerMvListResponse> {
         let data = self
             .base
             .cgi(

@@ -3,7 +3,7 @@
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::base::{Album, MV, Singer, Song, SongList};
+use super::base::{Album, Singer, Song, SongList, MV};
 use crate::jsonpath_model;
 
 /// 搜索场景下的歌曲详尽模型.

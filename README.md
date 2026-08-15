@@ -120,7 +120,13 @@ cargo run --example demo
 > ⚠️ 未 live 验证的写接口已移到 feature `experimental`（默认关闭），见 `docs/experimental.md`。
 > ⑦ 实时推送、⑧ Web 端 OAuth 登录为长周期项。
 
-## 许可证
+## 质量门禁
+
+```bash
+cargo fmt --check
+cargo test --all-features
+cargo clippy --all-targets --all-features -- -D warnings
+```## 许可证
 
 本项目采用 **[GNU General Public License v3.0 or later](./LICENSE)**。
 

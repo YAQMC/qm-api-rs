@@ -87,7 +87,12 @@ impl CommentApi {
         }
         let data = self
             .base
-            .cgi("music.globalComment.CommentRead", "GetHotCommentList", params, RequestOptions::default())
+            .cgi(
+                "music.globalComment.CommentRead",
+                "GetHotCommentList",
+                params,
+                RequestOptions::default(),
+            )
             .await?;
         Ok(serde_json::from_value(data)?)
     }
@@ -120,7 +125,12 @@ impl CommentApi {
         }
         let data = self
             .base
-            .cgi("music.globalComment.CommentRead", "GetNewCommentList", params, RequestOptions::default())
+            .cgi(
+                "music.globalComment.CommentRead",
+                "GetNewCommentList",
+                params,
+                RequestOptions::default(),
+            )
             .await?;
         Ok(serde_json::from_value(data)?)
     }
@@ -153,7 +163,12 @@ impl CommentApi {
         }
         let data = self
             .base
-            .cgi("music.globalComment.CommentRead", "GetRecCommentList", params, RequestOptions::default())
+            .cgi(
+                "music.globalComment.CommentRead",
+                "GetRecCommentList",
+                params,
+                RequestOptions::default(),
+            )
             .await?;
         Ok(serde_json::from_value(data)?)
     }
@@ -182,7 +197,12 @@ impl CommentApi {
         }
         let data = self
             .base
-            .cgi("music.globalComment.SongTsComment", "GetSongTsCmList", params, RequestOptions::default())
+            .cgi(
+                "music.globalComment.SongTsComment",
+                "GetSongTsCmList",
+                params,
+                RequestOptions::default(),
+            )
             .await?;
         Ok(serde_json::from_value(data)?)
     }
@@ -214,13 +234,22 @@ impl CommentApi {
         opts.credential = credential.cloned();
         let data = self
             .base
-            .cgi("music.globalComment.CommentWriteServer", "AddComment", req_data, opts)
+            .cgi(
+                "music.globalComment.CommentWriteServer",
+                "AddComment",
+                req_data,
+                opts,
+            )
             .await?;
         Ok(serde_json::from_value(data)?)
     }
 
     /// 删除评论.
-    pub async fn delete_comment(&self, cm_id: &str, credential: Option<&Credential>) -> Result<bool> {
+    pub async fn delete_comment(
+        &self,
+        cm_id: &str,
+        credential: Option<&Credential>,
+    ) -> Result<bool> {
         let mut opts = RequestOptions::default();
         opts.require_login = true;
         opts.credential = credential.cloned();
@@ -245,22 +274,40 @@ impl CommentApi {
     ///
     /// 参数与响应 schema 未经 live 验证, 仅提供透传能力; 稳定业务代码请勿依赖
     /// 其具体字段, 应自行封装为类型化 DTO.
-    pub async fn raw_get_reply_comments(&self, param: Value, credential: Option<&Credential>) -> Result<Value> {
+    pub async fn raw_get_reply_comments(
+        &self,
+        param: Value,
+        credential: Option<&Credential>,
+    ) -> Result<Value> {
         let mut opts = RequestOptions::default();
         opts.credential = credential.cloned();
         self.base
-            .cgi("music.globalComment.CommentReadServer", "GetReplyCommentList", param, opts)
+            .cgi(
+                "music.globalComment.CommentReadServer",
+                "GetReplyCommentList",
+                param,
+                opts,
+            )
             .await
     }
 
     /// ⚠️ **Raw 透传** — 更新热评状态
     /// (官方桌面端 `GlobalCommentWriteServer / UpdateHotComment`).
-    pub async fn raw_update_hot_comment(&self, param: Value, credential: Option<&Credential>) -> Result<Value> {
+    pub async fn raw_update_hot_comment(
+        &self,
+        param: Value,
+        credential: Option<&Credential>,
+    ) -> Result<Value> {
         let mut opts = RequestOptions::default();
         opts.require_login = true;
         opts.credential = credential.cloned();
         self.base
-            .cgi("GlobalComment.GlobalCommentWriteServer", "UpdateHotComment", param, opts)
+            .cgi(
+                "GlobalComment.GlobalCommentWriteServer",
+                "UpdateHotComment",
+                param,
+                opts,
+            )
             .await
     }
 }

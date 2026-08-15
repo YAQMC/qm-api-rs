@@ -74,6 +74,9 @@ mod tests {
 
     #[test]
     fn test_md5() {
-        assert_eq!(calc_md5(&[b"hello", b"world"]), "fc5e038d38a57032085441e7fe7010b0");
+        assert_eq!(
+            calc_md5(&[b"hello", b"world"]),
+            "fc5e038d38a57032085441e7fe7010b0"
+        );
     }
 }

@@ -94,7 +94,7 @@ fn collect(value: &Value, segments: &[Segment], out: &mut Vec<Value>) {
 ///
 /// - 表达式含 `[*]` 时始终返回数组;
 /// - 否则单值返回标量, 多值返回数组.
-pub fn extract<'a>(root: &'a Value, expr: &str) -> Value {
+pub fn extract(root: &Value, expr: &str) -> Value {
     let segments = parse(expr);
     let mut out = Vec::new();
     collect(root, &segments, &mut out);
@@ -175,13 +175,43 @@ mod tests {
     fn test_extract_optional_none_on_missing() {
         let v = json!({});
         assert_eq!(extract_optional::<i64>(&v, "$.a.b"), None);
-        assert_eq!(extract_optional::<i64>(&json!({"a": {"b": 7}}), "$.a.b"), Some(7));
+        assert_eq!(
+            extract_optional::<i64>(&json!({"a": {"b": 7}}), "$.a.b"),
+            Some(7)
+        );
     }
 
     #[test]
     fn test_extract_strict_reports_missing() {
         let v = json!({});
         assert!(extract_strict::<i64>(&v, "$.a.b").is_err());
-        assert_eq!(extract_strict::<i64>(&json!({"a": {"b": 7}}), "$.a.b").unwrap(), 7);
+        assert_eq!(
+            extract_strict::<i64>(&json!({"a": {"b": 7}}), "$.a.b").unwrap(),
+            7
+        );
+    }
+
+    #[test]
+    fn jsonpath_model_optional_field_is_option() {
+        crate::jsonpath_model!(TestOptionalModel {
+            id: "$.id" => strict(i64),
+            name: "$.name" => optional(String),
+            extra: "$.extra" => default(i64),
+        });
+        let v = json!({ "id": 1, "extra": 5 });
+        let m: TestOptionalModel = serde_json::from_value(v).unwrap();
+        assert_eq!(m.id, 1);
+        assert_eq!(m.name, None); // optional 字段类型为 Option<String>
+        assert_eq!(m.extra, 5);
+
+        // 提供 name 时得到 Some.
+        let v2 = json!({ "id": 2, "name": "x" });
+        let m2: TestOptionalModel = serde_json::from_value(v2).unwrap();
+        assert_eq!(m2.name.as_deref(), Some("x"));
+        assert_eq!(m2.extra, 0);
+
+        // strict 字段缺失 → 反序列化失败 (不静默吞掉).
+        let v3 = json!({ "name": "x" });
+        assert!(serde_json::from_value::<TestOptionalModel>(v3).is_err());
     }
 }

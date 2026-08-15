@@ -14,7 +14,10 @@ use qqmusic_api::{Client, Credential, SearchType};
 fn load_credential() -> Option<Credential> {
     let musicid: i64 = std::env::var("QM_MUSICID").ok()?.parse().ok()?;
     let musickey = std::env::var("QM_MUSICKEY").ok()?;
-    let login_type: i64 = std::env::var("QM_LOGIN_TYPE").ok().and_then(|s| s.parse().ok()).unwrap_or(2);
+    let login_type: i64 = std::env::var("QM_LOGIN_TYPE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(2);
     Some(Credential {
         musicid,
         str_musicid: musicid.to_string(),
@@ -33,7 +36,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 1. VIP 状态检测
     match client.user.is_vip(Some(&credential)).await {
         Ok(true) => println!("[VIP] 账号 {} 具备 VIP 权益", credential.musicid),
-        Ok(false) => println!("[非VIP] 账号 {} 无 VIP 权益 (部分高音质不可用)", credential.musicid),
+        Ok(false) => println!(
+            "[非VIP] 账号 {} 无 VIP 权益 (部分高音质不可用)",
+            credential.musicid
+        ),
         Err(e) => println!("[VIP检查失败] {e} (凭证可能无效)"),
     }
 
@@ -43,10 +49,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .search_by_type("晴天", SearchType::Song, 1, 1, &[], None, true)
         .await?;
     let song = resp.song[0].base.clone();
-    println!("歌曲: {} - {}", song.name, song.singer.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("/"));
+    println!(
+        "歌曲: {} - {}",
+        song.name,
+        song.singer
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect::<Vec<_>>()
+            .join("/")
+    );
 
     let qualities = client.song.available_qualities(&song);
-    println!("可用音质: {:?}", qualities.iter().map(|q| format!("{q:?}")).collect::<Vec<_>>());
+    println!(
+        "可用音质: {:?}",
+        qualities
+            .iter()
+            .map(|q| format!("{q:?}"))
+            .collect::<Vec<_>>()
+    );
 
     // 3. 获取最高音质播放链接 (加密音质走 CgiGetEVkey, 需要 VIP)
     match client
@@ -57,11 +77,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok((quality, urls)) => {
             println!("最高音质: {:?}", quality);
             for item in urls.data.iter().take(2) {
-                println!("  filename={} result={} purl.len={} ekey.len={}",
-                    item.filename, item.result, item.purl.len(), item.ekey.len());
+                println!(
+                    "  filename={} result={} purl.len={} ekey.len={}",
+                    item.filename,
+                    item.result,
+                    item.purl.len(),
+                    item.ekey.len()
+                );
             }
             // 4. 下载并解密
-            match client.song.download_quality(&song, quality, Some(&credential)).await {
+            match client
+                .song
+                .download_quality(&song, quality, Some(&credential))
+                .await
+            {
                 Ok((audio, ext)) => {
                     println!("[下载解密成功] {} 字节, 格式 .{}", audio.len(), ext);
                     let out = std::path::Path::new("output");

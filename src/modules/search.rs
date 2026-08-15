@@ -97,7 +97,11 @@ impl SearchApi {
         let text = self
             .base
             .context
-            .request_http(reqwest::Method::GET, "https://c.y.qq.com/splcloud/fcgi-bin/smartbox_new.fcg", &opts)
+            .request_http(
+                reqwest::Method::GET,
+                "https://c.y.qq.com/splcloud/fcgi-bin/smartbox_new.fcg",
+                &opts,
+            )
             .await?;
         Ok(serde_json::from_str(&text)?)
     }
@@ -127,7 +131,12 @@ impl SearchApi {
         }
         let data = self
             .base
-            .cgi("music.adaptor.SearchAdaptor", "do_search_v2", param, RequestOptions::default())
+            .cgi(
+                "music.adaptor.SearchAdaptor",
+                "do_search_v2",
+                param,
+                RequestOptions::default(),
+            )
             .await?;
         Ok(serde_json::from_value(data)?)
     }
@@ -135,6 +144,7 @@ impl SearchApi {
     /// 类型搜索 (固定使用 Android 平台).
     ///
     /// 返回原始响应; 可通过 `resp.song/singer/album/...` 字段获取对应分类结果.
+    #[allow(clippy::too_many_arguments)]
     pub async fn search_by_type(
         &self,
         keyword: &str,
@@ -174,7 +184,12 @@ impl SearchApi {
         opts.platform = Some(Platform::Android);
         let data = self
             .base
-            .cgi("music.search.SearchCgiService", "DoSearchForQQMusicMobile", param, opts)
+            .cgi(
+                "music.search.SearchCgiService",
+                "DoSearchForQQMusicMobile",
+                param,
+                opts,
+            )
             .await?;
         Ok(serde_json::from_value(data)?)
     }

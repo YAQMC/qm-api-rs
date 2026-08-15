@@ -10,9 +10,8 @@ use std::sync::Arc;
 use crate::error::Result;
 
 /// 页面抓取函数: 接收当前请求参数, 返回解析后的单页响应.
-pub type FetchFn<T> = Arc<
-    dyn Fn(Value) -> Pin<Box<dyn Future<Output = Result<T>> + Send>> + Send + Sync,
->;
+pub type FetchFn<T> =
+    Arc<dyn Fn(Value) -> Pin<Box<dyn Future<Output = Result<T>> + Send>> + Send + Sync>;
 
 /// 下一页参数构建函数: 根据当前请求参数与上一页响应构造下一页参数.
 pub type NextParamsFn<T> = Arc<dyn Fn(&Value, &T) -> Option<Value> + Send + Sync>;
@@ -133,18 +132,25 @@ where
         if !has_more(resp) {
             return None;
         }
-        let page = params.get(page_key).and_then(Value::as_i64).unwrap_or(start_page);
+        let page = params
+            .get(page_key)
+            .and_then(Value::as_i64)
+            .unwrap_or(start_page);
         let mut next = params.clone();
         next[page_key] = Value::from(page + 1);
         Some(next)
     };
-    Pager::new(initial, {
-        let fetch = fetch.clone();
-        move |p| -> Pin<Box<dyn Future<Output = Result<T>> + Send>> {
-            let f = fetch.clone();
-            Box::pin(async move { f(p).await })
-        }
-    }, next_params)
+    Pager::new(
+        initial,
+        {
+            let fetch = fetch.clone();
+            move |p| -> Pin<Box<dyn Future<Output = Result<T>> + Send>> {
+                let f = fetch.clone();
+                Box::pin(async move { f(p).await })
+            }
+        },
+        next_params,
+    )
 }
 
 /// 基于偏移量窗口的翻页策略.
@@ -169,18 +175,25 @@ where
             return None;
         }
         let offset = params.get(offset_key).and_then(Value::as_i64).unwrap_or(0);
-        let step = params.get(page_size_key).and_then(Value::as_i64).unwrap_or(10);
+        let step = params
+            .get(page_size_key)
+            .and_then(Value::as_i64)
+            .unwrap_or(10);
         let mut next = params.clone();
         next[offset_key] = Value::from(offset + step);
         Some(next)
     };
-    Pager::new(initial, {
-        let fetch = fetch.clone();
-        move |p| -> Pin<Box<dyn Future<Output = Result<T>> + Send>> {
-            let f = fetch.clone();
-            Box::pin(async move { f(p).await })
-        }
-    }, next_params)
+    Pager::new(
+        initial,
+        {
+            let fetch = fetch.clone();
+            move |p| -> Pin<Box<dyn Future<Output = Result<T>> + Send>> {
+                let f = fetch.clone();
+                Box::pin(async move { f(p).await })
+            }
+        },
+        next_params,
+    )
 }
 
 #[cfg(test)]

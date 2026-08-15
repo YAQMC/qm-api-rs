@@ -31,7 +31,12 @@ impl AlbumApi {
         };
         let data = self
             .base
-            .cgi("music.musichallAlbum.AlbumInfoServer", "GetAlbumDetail", param, RequestOptions::default())
+            .cgi(
+                "music.musichallAlbum.AlbumInfoServer",
+                "GetAlbumDetail",
+                param,
+                RequestOptions::default(),
+            )
             .await?;
         Ok(serde_json::from_value(data)?)
     }
@@ -46,13 +51,23 @@ impl AlbumApi {
         }
         let data = self
             .base
-            .cgi("music.musichallAlbum.AlbumSongList", "GetAlbumSongList", param, RequestOptions::default())
+            .cgi(
+                "music.musichallAlbum.AlbumSongList",
+                "GetAlbumSongList",
+                param,
+                RequestOptions::default(),
+            )
             .await?;
         Ok(serde_json::from_value(data)?)
     }
 
     /// 获取新碟上架列表.
-    pub async fn get_new_album(&self, area: i64, num: i64, page: i64) -> Result<GetNewAlbumResponse> {
+    pub async fn get_new_album(
+        &self,
+        area: i64,
+        num: i64,
+        page: i64,
+    ) -> Result<GetNewAlbumResponse> {
         let data = self
             .base
             .cgi(
@@ -71,7 +86,11 @@ impl AlbumApi {
     /// 猜测, 未获 ASAR/live 证据**, 不要对真实账号执行破坏性操作. 默认不编译,
     /// 需显式启用 `--features experimental`.
     #[cfg(feature = "experimental")]
-    pub async fn fav_album(&self, album_id: &[i64], credential: Option<&Credential>) -> Result<AlbumFavWriteResponse> {
+    pub async fn fav_album(
+        &self,
+        album_id: &[i64],
+        credential: Option<&Credential>,
+    ) -> Result<AlbumFavWriteResponse> {
         let mut opts = RequestOptions::default();
         opts.require_login = true;
         opts.credential = credential.cloned();
@@ -94,7 +113,11 @@ impl AlbumApi {
     /// 不要对真实账号执行破坏性操作. 默认不编译, 需显式启用
     /// `--features experimental`.
     #[cfg(feature = "experimental")]
-    pub async fn del_fav_album(&self, album_id: &[i64], credential: Option<&Credential>) -> Result<AlbumFavWriteResponse> {
+    pub async fn del_fav_album(
+        &self,
+        album_id: &[i64],
+        credential: Option<&Credential>,
+    ) -> Result<AlbumFavWriteResponse> {
         let mut opts = RequestOptions::default();
         opts.require_login = true;
         opts.credential = credential.cloned();

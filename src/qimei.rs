@@ -11,8 +11,8 @@ use rsa::RsaPublicKey;
 use serde_json::{json, Value};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::Device;
 use crate::utils::calc_md5;
+use crate::Device;
 
 const PUBLIC_KEY: &str = r#"-----BEGIN PUBLIC KEY-----
 MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDEIxgwoutfwoJxcGQeedgP7FG9qaIuS0qzfR8gWkrkTZKM2iWHn2ajQpBRZjMSoSf6+KJGvar2ORhBfpDXyVtZCKpqLQ+FLkpncClKVIrBwv6PHyUvuCb0rIarmgDnzkfQAqVufEtR64iazGDKatvJ9y6B9NMbHddGSAUmRTCrHQIDAQAB
@@ -104,7 +104,9 @@ fn rand_hex(n: usize) -> String {
 
 fn rand_hex_from(range: std::ops::Range<u8>, n: usize) -> String {
     let mut rng = rand::thread_rng();
-    (0..n).map(|_| format!("{:x}", rng.gen_range(range.clone()))).collect()
+    (0..n)
+        .map(|_| format!("{:x}", rng.gen_range(range.clone())))
+        .collect()
 }
 
 /// 根据设备信息随机生成 QIMEI 请求负载.
@@ -171,7 +173,9 @@ pub fn build_qimei_request(
 
     let b64 = base64::engine::general_purpose::STANDARD;
     let key = b64.encode(rsa_encrypt(crypt_key.as_bytes()).expect("rsa encrypt"));
-    let params = b64.encode(aes_encrypt(crypt_key.as_bytes(), payload.to_string().as_bytes()).expect("aes encrypt"));
+    let params = b64.encode(
+        aes_encrypt(crypt_key.as_bytes(), payload.to_string().as_bytes()).expect("aes encrypt"),
+    );
     let extra = format!("{{\"appKey\":\"{APP_KEY}\"}}");
     let req_sign = calc_md5(&[
         key.as_bytes(),

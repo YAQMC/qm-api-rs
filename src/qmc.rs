@@ -41,7 +41,10 @@ fn transform(data: &[u8], offset_start: usize, key: &[u8; 128]) -> Vec<u8> {
             (std::cmp::min(0x8000 - pos, total - i), pos % V1_KEY_SIZE)
         } else {
             let r = pos % V1_OFFSET_BOUNDARY;
-            (std::cmp::min(V1_OFFSET_BOUNDARY - r, total - i), r % V1_KEY_SIZE)
+            (
+                std::cmp::min(V1_OFFSET_BOUNDARY - r, total - i),
+                r % V1_KEY_SIZE,
+            )
         };
         let base: Vec<u8> = if phase == 0 {
             key.to_vec()
@@ -117,8 +120,11 @@ fn tea_key_from16(key16: &[u8]) -> [u32; 4] {
 /// tc_tea "tweaked CBC" 解密. 返回去除 padding 后的明文.
 fn tea_cbc_decrypt(ciphertext: &[u8], key16: &[u8]) -> Result<Vec<u8>> {
     let k = tea_key_from16(key16);
-    if ciphertext.len() % 8 != 0 || ciphertext.len() < 10 {
-        return Err(QmError::ApiData(format!("TEA: invalid cipher length {}", ciphertext.len())));
+    if !ciphertext.len().is_multiple_of(8) || ciphertext.len() < 10 {
+        return Err(QmError::ApiData(format!(
+            "TEA: invalid cipher length {}",
+            ciphertext.len()
+        )));
     }
     let mut iv1: u64 = 0;
     let mut iv2: u64 = 0;
@@ -204,11 +210,11 @@ const EKEY_V2_KEY2: [u8; 16] = [
 fn make_simple_key() -> [u8; 8] {
     let f01 = 0.1f32;
     let mut result = [0u8; 8];
-    for i in 0..8 {
+    for (i, slot) in result.iter_mut().enumerate() {
         let v = 106.0f32 + (i as f32) * f01;
         let t = v.tan();
         let v2 = t * 100.0f32;
-        result[i] = v2 as u8;
+        *slot = v2 as u8;
     }
     result
 }
@@ -250,7 +256,10 @@ fn ekey_decrypt_v2(ekey: &[u8]) -> Result<Vec<u8>> {
         .map_err(|e| QmError::ApiData(format!("EKey V2 base64 解码失败: {e}")))?;
     let payload = tea_cbc_decrypt(&payload, &EKEY_V2_KEY1)?;
     let payload = tea_cbc_decrypt(&payload, &EKEY_V2_KEY2)?;
-    let zero = payload.iter().position(|&b| b == 0).unwrap_or(payload.len());
+    let zero = payload
+        .iter()
+        .position(|&b| b == 0)
+        .unwrap_or(payload.len());
     ekey_decrypt_v1(&payload[..zero])
 }
 
@@ -275,7 +284,7 @@ fn key_compress(long_key: &[u8]) -> Vec<u8> {
         let idx = (i * i + 71214) % n;
         let key = long_key[idx];
         let shift = (idx + 4) % 8;
-        result.push(((key << shift) | (key >> shift)) & 0xFF);
+        result.push((key << shift) | (key >> shift));
     }
     result
 }
@@ -343,7 +352,12 @@ impl Rc4 {
             j = (j + state[i] as usize + key[i % n] as usize) % n;
             state.swap(i, j);
         }
-        Rc4 { state, i: 0, j: 0, n }
+        Rc4 {
+            state,
+            i: 0,
+            j: 0,
+            n,
+        }
     }
 
     fn generate(&mut self) -> u8 {
@@ -414,8 +428,11 @@ impl Qmc2Rc4 {
             start += take;
             pos += take;
         }
-        if pos % RC4_OTHER_SEGMENT_SIZE != 0 {
-            let take = std::cmp::min(RC4_OTHER_SEGMENT_SIZE - (pos % RC4_OTHER_SEGMENT_SIZE), n - start);
+        if !pos.is_multiple_of(RC4_OTHER_SEGMENT_SIZE) {
+            let take = std::cmp::min(
+                RC4_OTHER_SEGMENT_SIZE - (pos % RC4_OTHER_SEGMENT_SIZE),
+                n - start,
+            );
             self.process_other_segment(&mut out, start, take, pos);
             start += take;
             pos += take;
@@ -474,9 +491,8 @@ pub struct FooterMetadata {
 }
 
 fn is_base64_text(s: &[u8]) -> bool {
-    s.iter().all(|&c| {
-        c.is_ascii_alphanumeric() || c == b'+' || c == b'/' || c == b'='
-    })
+    s.iter()
+        .all(|&c| c.is_ascii_alphanumeric() || c == b'+' || c == b'/' || c == b'=')
 }
 
 fn read_utf16le(data: &[u8]) -> String {
@@ -586,7 +602,9 @@ pub fn parse_footer(tail: &[u8]) -> Result<Option<FooterMetadata>> {
         let len_bytes: [u8; 4] = data[data.len() - 4..].try_into().unwrap();
         let payload_len = u32::from_le_bytes(len_bytes) as usize;
         if payload_len != 0xC0 {
-            return Err(QmError::ApiData(format!("MusicEx 长度非法: 0x{payload_len:X}")));
+            return Err(QmError::ApiData(format!(
+                "MusicEx 长度非法: 0x{payload_len:X}"
+            )));
         }
         // 防恶意/损坏 footer: 校验内部载荷足够长, 避免 slice 越界 panic.
         let inner_len = payload2.len().saturating_sub(payload_len - 0x10);
@@ -615,7 +633,10 @@ pub fn parse_footer(tail: &[u8]) -> Result<Option<FooterMetadata>> {
         return Err(QmError::ApiData("PCv1 长度不一致".into()));
     }
     let ekey_bytes = &payload[payload.len() - payload_len..];
-    let zero = ekey_bytes.iter().position(|&b| b == 0).unwrap_or(ekey_bytes.len());
+    let zero = ekey_bytes
+        .iter()
+        .position(|&b| b == 0)
+        .unwrap_or(ekey_bytes.len());
     let ekey_bytes = &ekey_bytes[..zero];
     if !is_base64_text(ekey_bytes) {
         return Err(QmError::ApiData("PCv1 EKey 非法".into()));
@@ -692,26 +713,24 @@ pub fn detect_audio_type(data: &[u8]) -> String {
     if (magic & 0xFFF6_0000) == 0xFFF0_0000 {
         return "aac".into();
     }
-    if buf.len() >= 8 && &buf[4..8] == b"ftyp" {
-        if buf.len() >= 12 {
-            let major = &buf[8..12];
-            if major == b"isom" || major == b"iso2" || major == b"MSNV" {
-                return "mp4".into();
-            }
-            if major == b"NDAS" {
+    if buf.len() >= 12 && &buf[4..8] == b"ftyp" {
+        let major = &buf[8..12];
+        if major == b"isom" || major == b"iso2" || major == b"MSNV" {
+            return "mp4".into();
+        }
+        if major == b"NDAS" {
+            return "m4a".into();
+        }
+        if buf.len() >= 11 {
+            let major3 = &buf[8..11];
+            if major3 == b"M4A" {
                 return "m4a".into();
             }
-            if buf.len() >= 11 {
-                let major3 = &buf[8..11];
-                if major3 == b"M4A" {
-                    return "m4a".into();
-                }
-                if major3 == b"M4B" {
-                    return "m4b".into();
-                }
-                if major3 == b"mp4" {
-                    return "mp4".into();
-                }
+            if major3 == b"M4B" {
+                return "m4b".into();
+            }
+            if major3 == b"mp4" {
+                return "mp4".into();
             }
         }
     }
@@ -741,14 +760,14 @@ pub fn detect_audio_extension(data: &[u8]) -> String {
 pub fn decrypt_qmc(data: &[u8], ekey_override: Option<&str>) -> Result<(Vec<u8>, String)> {
     let tail_start = data.len().saturating_sub(1024);
     let tail = &data[tail_start..];
-    let footer = match parse_footer(tail) {
-        Ok(f) => f,
-        Err(_) => None,
-    };
+    let footer = parse_footer(tail).unwrap_or(None);
 
     // --- v2 路径 ---
     if let Some(footer) = &footer {
-        let ekey = footer.ekey.clone().or_else(|| ekey_override.map(|s| s.to_string()));
+        let ekey = footer
+            .ekey
+            .clone()
+            .or_else(|| ekey_override.map(|s| s.to_string()));
         if let Some(ekey) = ekey {
             let master_key = ekey_decrypt(&ekey)?;
             let cipher = make_qmc2_cipher(&master_key)?;
@@ -775,14 +794,21 @@ pub fn decrypt_qmc(data: &[u8], ekey_override: Option<&str>) -> Result<(Vec<u8>,
 }
 
 /// 解密单个 QMC 文件并写入输出路径. 返回 (输出字节, 输出扩展名).
-pub fn decrypt_file(input_path: &std::path::Path, ekey_override: Option<&str>) -> Result<(Vec<u8>, String)> {
+pub fn decrypt_file(
+    input_path: &std::path::Path,
+    ekey_override: Option<&str>,
+) -> Result<(Vec<u8>, String)> {
     let data = std::fs::read(input_path).map_err(|e| QmError::Io(e.to_string()))?;
     let (out, ext) = decrypt_qmc(&data, ekey_override)?;
     Ok((out, ext))
 }
 
 /// 将解密后的音频写入磁盘, 自动选择扩展名.
-pub fn decrypt_file_to(input_path: &std::path::Path, output_dir: &std::path::Path, ekey_override: Option<&str>) -> Result<std::path::PathBuf> {
+pub fn decrypt_file_to(
+    input_path: &std::path::Path,
+    output_dir: &std::path::Path,
+    ekey_override: Option<&str>,
+) -> Result<std::path::PathBuf> {
     let (out, ext) = decrypt_file(input_path, ekey_override)?;
     std::fs::create_dir_all(output_dir)?;
     let stem = input_path
@@ -817,14 +843,18 @@ mod tests {
 
     #[test]
     fn v1_transform_boundary() {
-        let d2 = [0x13, 0x19, 0x11, 0x12, 0x10, 0xa0, 0x75, 0x6c, 0x76, 0x69, 0x62];
+        let d2 = [
+            0x13, 0x19, 0x11, 0x12, 0x10, 0xa0, 0x75, 0x6c, 0x76, 0x69, 0x62,
+        ];
         let out = transform(&d2, 0x7FFA, &gen_key());
         assert_eq!(out, b"hello world");
     }
 
     #[test]
     fn v1_whole_file() {
-        let data = [0xab, 0x2f, 0xba, 0xa6, 0xff, 0x47, 0x80, 0x3d, 0xaa, 0xcd, 0x02];
+        let data = [
+            0xab, 0x2f, 0xba, 0xa6, 0xff, 0x47, 0x80, 0x3d, 0xaa, 0xcd, 0x02,
+        ];
         assert_eq!(v1_decrypt(&data), b"hello world");
     }
 
@@ -937,7 +967,10 @@ mod tests {
         let key = *b"43218765dcbahgfe";
         let salt = [0xA5, 0x6E, 0x35, 0xBC, 0x7C, 0x31, 0x04, 0x55, 0xA0, 0xBF];
         let enc = tea_cbc_encrypt(b"this is a test message.", &key, &salt).unwrap();
-        assert_eq!(tea_cbc_decrypt(&enc, &key).unwrap(), b"this is a test message.");
+        assert_eq!(
+            tea_cbc_decrypt(&enc, &key).unwrap(),
+            b"this is a test message."
+        );
     }
 
     #[test]
@@ -1049,7 +1082,14 @@ mod tests {
     #[test]
     fn malformed_footer_never_panics() {
         // 各类畸形尾部: 短尾部 / 随机字节, 只允许 Ok(None)/Err, 不允许 panic.
-        for tail in [&b""[..], b"abc", b"QTag", b"\x00\x00\x00\x10QTag", b"musicex\x00", b"STag"] {
+        for tail in [
+            &b""[..],
+            b"abc",
+            b"QTag",
+            b"\x00\x00\x00\x10QTag",
+            b"musicex\x00",
+            b"STag",
+        ] {
             let _ = parse_footer(tail);
         }
         let garbage: Vec<u8> = (0u8..=255).cycle().take(1024).collect();

@@ -3,7 +3,7 @@
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::base::{Album, MV, Singer, Song};
+use super::base::{Album, Singer, Song, MV};
 use crate::jsonpath_model;
 use crate::models::de::{null_as_default, str_or_zero};
 

@@ -85,6 +85,9 @@ impl CredentialPersist for FileCredentialPersist {
 pub struct CredentialStore {
     store: Mutex<Store>,
     backend: Option<Box<dyn CredentialPersist>>,
+    /// 按账号的刷新锁 (避免并发 refresh_token 请求).
+    refresh_locks:
+        std::sync::Mutex<std::collections::HashMap<i64, std::sync::Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl Default for CredentialStore {
@@ -92,6 +95,7 @@ impl Default for CredentialStore {
         CredentialStore {
             store: Mutex::new(Store::default()),
             backend: None,
+            refresh_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
 }
@@ -119,6 +123,7 @@ impl CredentialStore {
         Ok(CredentialStore {
             store: Mutex::new(store),
             backend: Some(backend),
+            refresh_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
         })
     }
 
@@ -180,7 +185,9 @@ impl CredentialStore {
     /// 获取当前账号凭证.
     pub fn current(&self) -> Option<Credential> {
         let store = self.store.lock().unwrap();
-        store.current.and_then(|id| store.accounts.get(&id).cloned())
+        store
+            .current
+            .and_then(|id| store.accounts.get(&id).cloned())
     }
 
     /// 设置当前账号.
@@ -197,7 +204,13 @@ impl CredentialStore {
 
     /// 所有账号的 musicid 列表.
     pub fn account_ids(&self) -> Vec<i64> {
-        self.store.lock().unwrap().accounts.keys().copied().collect()
+        self.store
+            .lock()
+            .unwrap()
+            .accounts
+            .keys()
+            .copied()
+            .collect()
     }
 
     /// 检查凭证是否过期.
@@ -205,8 +218,25 @@ impl CredentialStore {
         self.get(musicid).map(|c| c.is_expired()).unwrap_or(false)
     }
 
-    /// 刷新指定账号凭证 (自动持久化).
+    /// 刷新指定账号凭证 (自动持久化, per-account singleflight).
+    ///
+    /// 锁内会重新检查凭证是否仍过期: 若已被其他并发任务刷新则直接返回,
+    /// 避免对可能 one-time 的 refresh_token 发出重复请求.
     pub async fn refresh(&self, client: &Client, musicid: i64) -> Result<Credential> {
+        let lock = {
+            let mut locks = self.refresh_locks.lock().unwrap();
+            locks
+                .entry(musicid)
+                .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
+                .clone()
+        };
+        let _guard = lock.lock().await;
+        // 锁内复查: 已被其他任务刷新则直接返回.
+        if !self.is_expired(musicid) {
+            return self
+                .get(musicid)
+                .ok_or_else(|| QmError::CredentialInvalid(format!("账号 {musicid} 不存在")));
+        }
         let credential = self
             .get(musicid)
             .ok_or_else(|| QmError::CredentialInvalid(format!("账号 {musicid} 不存在")))?;
@@ -232,7 +262,8 @@ impl CredentialStore {
         if self.is_expired(musicid) {
             self.refresh(client, musicid).await
         } else {
-            Ok(self.get(musicid).expect("account exists"))
+            self.get(musicid)
+                .ok_or_else(|| QmError::CredentialInvalid(format!("账号 {musicid} 不存在")))
         }
     }
 

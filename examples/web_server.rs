@@ -9,7 +9,7 @@
 //! - `GET /song/lyric?mid=0039MnYb0qxYhV`
 //! - `GET /toplist`
 
-use axum::{Json, Router, extract::Query, routing::get};
+use axum::{extract::Query, routing::get, Json, Router};
 use qqmusic_api::modules::song::{SongFileInfo, SongFileType};
 use qqmusic_api::{Client, SearchType};
 use serde::{Deserialize, Serialize};
@@ -84,7 +84,15 @@ async fn search(client: &SharedClient, params: SearchParams) -> Json<ApiResponse
     let search_type = parse_search_type(&params.r#type);
     match client
         .search
-        .search_by_type(&params.keyword, search_type, params.num, params.page, &[], None, true)
+        .search_by_type(
+            &params.keyword,
+            search_type,
+            params.num,
+            params.page,
+            &[],
+            None,
+            true,
+        )
         .await
     {
         Ok(resp) => {
@@ -110,7 +118,9 @@ async fn search(client: &SharedClient, params: SearchParams) -> Json<ApiResponse
 
 async fn hotkey(client: &SharedClient) -> Json<ApiResponse> {
     match client.search.get_hotkey().await {
-        Ok(resp) => ok(json!({ "hotkey": resp.vec_hotkey.iter().map(|h| json!({ "query": h.query, "title": h.title })).collect::<Vec<_>>() })),
+        Ok(resp) => ok(
+            json!({ "hotkey": resp.vec_hotkey.iter().map(|h| json!({ "query": h.query, "title": h.title })).collect::<Vec<_>>() }),
+        ),
         Err(e) => err(e),
     }
 }
@@ -130,7 +140,9 @@ async fn song_url(client: &SharedClient, params: MidParams) -> Json<ApiResponse>
                 .data
                 .iter()
                 .filter(|u| !u.purl.is_empty())
-                .map(|u| json!({ "mid": u.mid, "purl": u.purl, "vkey": u.vkey, "result": u.result }))
+                .map(
+                    |u| json!({ "mid": u.mid, "purl": u.purl, "vkey": u.vkey, "result": u.result }),
+                )
                 .collect();
             ok(json!({ "expiration": resp.expiration, "urls": urls }))
         }
@@ -165,11 +177,38 @@ async fn toplist(client: &SharedClient) -> Json<ApiResponse> {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = Arc::new(Client::new(None, None)?);
     let app = Router::new()
-        .route("/search", get(|c: axum::Extension<SharedClient>, q: Query<SearchParams>| async move { search(&c, q.0).await }))
-        .route("/hotkey", get(|c: axum::Extension<SharedClient>| async move { hotkey(&c).await }))
-        .route("/song/url", get(|c: axum::Extension<SharedClient>, q: Query<MidParams>| async move { song_url(&c, q.0).await }))
-        .route("/song/lyric", get(|c: axum::Extension<SharedClient>, q: Query<MidParams>| async move { song_lyric(&c, q.0).await }))
-        .route("/toplist", get(|c: axum::Extension<SharedClient>| async move { toplist(&c).await }))
+        .route(
+            "/search",
+            get(
+                |c: axum::Extension<SharedClient>, q: Query<SearchParams>| async move {
+                    search(&c, q.0).await
+                },
+            ),
+        )
+        .route(
+            "/hotkey",
+            get(|c: axum::Extension<SharedClient>| async move { hotkey(&c).await }),
+        )
+        .route(
+            "/song/url",
+            get(
+                |c: axum::Extension<SharedClient>, q: Query<MidParams>| async move {
+                    song_url(&c, q.0).await
+                },
+            ),
+        )
+        .route(
+            "/song/lyric",
+            get(
+                |c: axum::Extension<SharedClient>, q: Query<MidParams>| async move {
+                    song_lyric(&c, q.0).await
+                },
+            ),
+        )
+        .route(
+            "/toplist",
+            get(|c: axum::Extension<SharedClient>| async move { toplist(&c).await }),
+        )
         .layer(axum::Extension(client));
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:3000").await?;

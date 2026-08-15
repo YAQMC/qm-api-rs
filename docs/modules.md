@@ -60,7 +60,7 @@ let client = Client::new_with_proxy(None, None, Some("http://127.0.0.1:7890"))?;
 
 ### 设备指纹持久化
 
-Android 平台的 QIMEI / session 可持久化，避免每次重启重新申请：
+Android 平台的 QIMEI（设备身份）可持久化，避免每次重启重新申请：
 
 ```rust
 client.save_device(std::path::Path::new("device.json"))?;
@@ -68,6 +68,9 @@ client.save_device(std::path::Path::new("device.json"))?;
 let client = Client::new(None, None)?;
 client.load_device(std::path::Path::new("device.json"))?;
 ```
+
+> 说明：Android session 是**账号运行态**（按 `musicid` 缓存在内存中），不属于
+> 设备身份，不随 `save_device` 持久化；每次启动会按需重新申请。
 
 ### 凭证管理（多账号 + 自动刷新）
 

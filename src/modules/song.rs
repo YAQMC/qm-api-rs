@@ -334,7 +334,7 @@ impl SongFileInfo {
             media_mid: None,
         }
     }
-    pub fn with_type(mut self, t: impl FileTypeLike + Send + Sync + 'static) -> Self {
+    pub fn with_type(mut self, t: impl FileTypeLike + 'static) -> Self {
         self.file_type = Some(Box::new(t));
         self
     }
@@ -406,7 +406,9 @@ impl SongApi {
         for item in song_info {
             match (item.id, item.mid.as_ref()) {
                 (None, None) | (Some(_), Some(_)) => {
-                    return Err(QmError::ValueError("SongQueryInfo 必须提供 id 或 mid 且不能同时提供".into()));
+                    return Err(QmError::ValueError(
+                        "SongQueryInfo 必须提供 id 或 mid 且不能同时提供".into(),
+                    ));
                 }
                 (Some(id), None) => ids.push(id),
                 (None, Some(mid)) => mids.push(mid.clone()),
@@ -427,7 +429,12 @@ impl SongApi {
         }
         let data = self
             .base
-            .cgi("music.trackInfo.UniformRuleCtrl", "CgiGetTrackInfo", param, RequestOptions::default())
+            .cgi(
+                "music.trackInfo.UniformRuleCtrl",
+                "CgiGetTrackInfo",
+                param,
+                RequestOptions::default(),
+            )
             .await?;
         Ok(serde_json::from_value(data)?)
     }
@@ -483,7 +490,9 @@ impl SongApi {
             });
             songtype.push(item.song_type.unwrap_or(0));
         }
-        let cred = credential.cloned().unwrap_or_else(|| self.base.credential());
+        let cred = credential
+            .cloned()
+            .unwrap_or_else(|| self.base.credential());
         let param = json!({
             "uin": cred.str_musicid(),
             "filename": filename,
@@ -509,7 +518,12 @@ impl SongApi {
         opts.platform = Some(crate::versioning::Platform::Web);
         let data = self
             .base
-            .cgi("music.pf_song_detail_svr", "get_song_detail_yqq", param, opts)
+            .cgi(
+                "music.pf_song_detail_svr",
+                "get_song_detail_yqq",
+                param,
+                opts,
+            )
             .await?;
         Ok(serde_json::from_value(data)?)
     }
@@ -543,7 +557,11 @@ impl SongApi {
     }
 
     /// 获取歌曲相关歌单.
-    pub async fn get_related_songlist(&self, songid: i64, last: &[i64]) -> Result<GetRelatedSonglistResponse> {
+    pub async fn get_related_songlist(
+        &self,
+        songid: i64,
+        last: &[i64],
+    ) -> Result<GetRelatedSonglistResponse> {
         let data = self
             .base
             .cgi(
@@ -557,7 +575,11 @@ impl SongApi {
     }
 
     /// 获取歌曲相关 MV.
-    pub async fn get_related_mv(&self, songid: i64, last_mvid: Option<&str>) -> Result<GetRelatedMvResponse> {
+    pub async fn get_related_mv(
+        &self,
+        songid: i64,
+        last_mvid: Option<&str>,
+    ) -> Result<GetRelatedMvResponse> {
         let data = self
             .base
             .cgi(
@@ -579,7 +601,12 @@ impl SongApi {
         };
         let data = self
             .base
-            .cgi("music.musichallSong.OtherVersionServer", "GetOtherVersionSongs", param, RequestOptions::default())
+            .cgi(
+                "music.musichallSong.OtherVersionServer",
+                "GetOtherVersionSongs",
+                param,
+                RequestOptions::default(),
+            )
             .await?;
         Ok(serde_json::from_value(data)?)
     }
@@ -593,7 +620,12 @@ impl SongApi {
         };
         let data = self
             .base
-            .cgi("music.sociality.KolWorksTag", "SongProducer", param, RequestOptions::default())
+            .cgi(
+                "music.sociality.KolWorksTag",
+                "SongProducer",
+                param,
+                RequestOptions::default(),
+            )
             .await?;
         Ok(serde_json::from_value(data)?)
     }
@@ -628,7 +660,11 @@ impl SongApi {
             let data = reply.require_success_allowing(&[10007])?;
             return Ok(serde_json::from_value(data)?);
         }
-        let score_type = if ttype == SheetType::EngineAi { -473 } else { -1 };
+        let score_type = if ttype == SheetType::EngineAi {
+            -473
+        } else {
+            -1
+        };
         let mut opts = RequestOptions::default();
         opts.override_comm = true;
         opts.comm = Some(json!({
@@ -668,7 +704,12 @@ impl SongApi {
         }));
         let data = self
             .base
-            .cgi("music.mir.SheetMusicSvr", "HasSheetMusic", json!({ "songMid": mid }), opts)
+            .cgi(
+                "music.mir.SheetMusicSvr",
+                "HasSheetMusic",
+                json!({ "songMid": mid }),
+                opts,
+            )
             .await?;
         Ok(serde_json::from_value(data)?)
     }
@@ -745,6 +786,19 @@ impl SongApi {
         crate::media::MediaSource::best(self, song, credential, allow_encrypted).await
     }
 
+    /// 获取歌曲**实际可播放**的最高音质来源描述 (只 resolve, 不下载).
+    ///
+    /// 按可用音质从高到低降级, 返回第一个 `playable()` 的来源; 这是
+    /// YAQMC Provider 获取播放来源的推荐入口.
+    pub async fn best_playable(
+        &self,
+        song: &Song,
+        credential: Option<&Credential>,
+        allow_encrypted: bool,
+    ) -> Result<crate::media::MediaSource> {
+        crate::media::best_playable(self, song, credential, allow_encrypted).await
+    }
+
     /// 下载并解密指定音质的音频 (媒体层助手, 见 `media::download_quality`).
     pub async fn download_quality(
         &self,
@@ -773,23 +827,41 @@ impl SongApi {
     ///
     /// `param` 通常形如 `{"songmid": ["xxx"]}` 或 `{"song_id": [id]}`;
     /// 参数与响应 schema 未经 live 验证, 仅提供透传能力.
-    pub async fn raw_is_song_fan_by_mid(&self, param: Value, credential: Option<&Credential>) -> Result<Value> {
+    pub async fn raw_is_song_fan_by_mid(
+        &self,
+        param: Value,
+        credential: Option<&Credential>,
+    ) -> Result<Value> {
         let mut opts = RequestOptions::default();
         opts.require_login = true;
         opts.credential = credential.cloned();
         self.base
-            .cgi("music.musicasset.SongFavRead", "IsSongFanByMid", param, opts)
+            .cgi(
+                "music.musicasset.SongFavRead",
+                "IsSongFanByMid",
+                param,
+                opts,
+            )
             .await
     }
 
     /// ⚠️ **Raw 透传** — 获取收藏歌曲列表
     /// (官方桌面端 `music.musicasset.SongFavRead / GetFavSonglist`).
-    pub async fn raw_get_fav_songlist(&self, param: Value, credential: Option<&Credential>) -> Result<Value> {
+    pub async fn raw_get_fav_songlist(
+        &self,
+        param: Value,
+        credential: Option<&Credential>,
+    ) -> Result<Value> {
         let mut opts = RequestOptions::default();
         opts.require_login = true;
         opts.credential = credential.cloned();
         self.base
-            .cgi("music.musicasset.SongFavRead", "GetFavSonglist", param, opts)
+            .cgi(
+                "music.musicasset.SongFavRead",
+                "GetFavSonglist",
+                param,
+                opts,
+            )
             .await
     }
 
@@ -815,7 +887,12 @@ impl SongApi {
             }
         }
         self.base
-            .cgi("music.vkey.GetVkey", "GetUrl", final_param, RequestOptions::default())
+            .cgi(
+                "music.vkey.GetVkey",
+                "GetUrl",
+                final_param,
+                RequestOptions::default(),
+            )
             .await
     }
 }

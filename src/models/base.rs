@@ -22,9 +22,19 @@ fn _cover_url(kind: &str, mid: &str, size: i32) -> String {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct Singer {
-    #[serde(alias = "singerID", alias = "singerId", alias = "SingerID", alias = "singer_id")]
+    #[serde(
+        alias = "singerID",
+        alias = "singerId",
+        alias = "SingerID",
+        alias = "singer_id"
+    )]
     pub id: i64,
-    #[serde(alias = "singerMid", alias = "singerMID", alias = "SingerMid", alias = "singer_mid")]
+    #[serde(
+        alias = "singerMid",
+        alias = "singerMID",
+        alias = "SingerMid",
+        alias = "singer_mid"
+    )]
     pub mid: String,
     #[serde(alias = "singerName", alias = "singer_name")]
     pub name: String,
@@ -38,7 +48,11 @@ pub struct Singer {
 
 impl Singer {
     pub fn cover_url(&self, size: i32) -> String {
-        let mid = if self.mid.is_empty() { &self.pmid } else { &self.mid };
+        let mid = if self.mid.is_empty() {
+            &self.pmid
+        } else {
+            &self.mid
+        };
         _cover_url("T001", mid, size)
     }
 }
@@ -64,7 +78,11 @@ pub struct Album {
 
 impl Album {
     pub fn cover_url(&self, size: i32) -> String {
-        let mid = if self.mid.is_empty() { &self.pmid } else { &self.mid };
+        let mid = if self.mid.is_empty() {
+            &self.pmid
+        } else {
+            &self.mid
+        };
         _cover_url("T002", mid, size)
     }
 }

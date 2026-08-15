@@ -12,7 +12,7 @@ use crate::versioning::Platform;
 use crate::Credential;
 
 /// CGI 请求选项.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct CgiOptions {
     /// 自定义公共参数 (与默认 comm 合并).
     pub comm: Option<Value>,
@@ -28,20 +28,6 @@ pub struct CgiOptions {
     pub sign: bool,
     /// 是否需要登录.
     pub require_login: bool,
-}
-
-impl Default for CgiOptions {
-    fn default() -> Self {
-        CgiOptions {
-            comm: None,
-            override_comm: false,
-            preserve_bool: false,
-            credential: None,
-            platform: None,
-            sign: false,
-            require_login: false,
-        }
-    }
 }
 
 impl CgiOptions {
@@ -179,7 +165,13 @@ impl Client {
     ///
     /// transport 层不解释业务错误码; 需要"成功才返回数据"的调用方应使用
     /// `cgi` / `cgi_typed`, 需要解释特殊状态码的调用方可直接读取 `code`.
-    pub async fn request_cgi(&self, module: &str, method: &str, param: Value, opts: &CgiOptions) -> Result<CgiReply<Value>> {
+    pub async fn request_cgi(
+        &self,
+        module: &str,
+        method: &str,
+        param: Value,
+        opts: &CgiOptions,
+    ) -> Result<CgiReply<Value>> {
         let ro: crate::context::RequestOptions = opts.into();
         self.context.request_cgi(module, method, param, &ro).await
     }
@@ -212,18 +204,34 @@ impl Client {
     }
 
     /// 执行一个 CGI 请求并反序列化为 `T`, `code != 0` 时失败.
-    pub async fn cgi<T: DeserializeOwned>(&self, module: &str, method: &str, param: Value, opts: &CgiOptions) -> Result<T> {
+    pub async fn cgi<T: DeserializeOwned>(
+        &self,
+        module: &str,
+        method: &str,
+        param: Value,
+        opts: &CgiOptions,
+    ) -> Result<T> {
         let reply = self.request_cgi(module, method, param, opts).await?;
         reply.into_typed::<T>()
     }
 
     /// 执行一个标准 HTTP 请求, 返回原始响应文本.
-    pub async fn request_http(&self, method: reqwest::Method, url: &str, opts: &HttpOptions) -> Result<String> {
+    pub async fn request_http(
+        &self,
+        method: reqwest::Method,
+        url: &str,
+        opts: &HttpOptions,
+    ) -> Result<String> {
         self.context.request_http(method, url, opts).await
     }
 
     /// 执行 HTTP 请求并反序列化.
-    pub async fn http<T: DeserializeOwned>(&self, method: reqwest::Method, url: &str, opts: &HttpOptions) -> Result<T> {
+    pub async fn http<T: DeserializeOwned>(
+        &self,
+        method: reqwest::Method,
+        url: &str,
+        opts: &HttpOptions,
+    ) -> Result<T> {
         let text = self.request_http(method, url, opts).await?;
         serde_json::from_str(&text).map_err(QmError::from)
     }

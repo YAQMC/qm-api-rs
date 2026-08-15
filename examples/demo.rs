@@ -48,8 +48,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // 3. 获取歌词
-    match client.lyric.get_lyric(&song.mid, 1, false, false, false, false).await {
-        Ok(lyric) => println!("歌词(前100字): {}", lyric.lyric.chars().take(100).collect::<String>()),
+    match client
+        .lyric
+        .get_lyric(&song.mid, 1, false, false, false, false)
+        .await
+    {
+        Ok(lyric) => println!(
+            "歌词(前100字): {}",
+            lyric.lyric.chars().take(100).collect::<String>()
+        ),
         Err(e) => println!("获取歌词失败: {e}"),
     }
 

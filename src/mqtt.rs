@@ -237,7 +237,8 @@ fn parse_properties(data: &[u8], pos: &mut usize) -> Option<MqttProperties> {
         let pid = read_varint(data, pos)? as u8;
         match pid {
             property_id::SERVER_KEEP_ALIVE => {
-                props.server_keep_alive = Some(u16::from_be_bytes([*data.get(*pos)?, *data.get(*pos + 1)?]));
+                props.server_keep_alive =
+                    Some(u16::from_be_bytes([*data.get(*pos)?, *data.get(*pos + 1)?]));
                 *pos += 2;
             }
             property_id::SERVER_REFERENCE => {
@@ -285,7 +286,9 @@ impl MqttClient {
         let mut redirect_count = 0;
         loop {
             let url = format!("wss://{host}:{port}{current_path}");
-            let mut request = url.into_client_request().map_err(|e| QmError::Network(e.to_string()))?;
+            let mut request = url
+                .into_client_request()
+                .map_err(|e| QmError::Network(e.to_string()))?;
             let hdrs = request.headers_mut();
             hdrs.insert("Sec-WebSocket-Protocol", HeaderValue::from_static("mqtt"));
             for (k, v) in headers {
@@ -328,7 +331,9 @@ impl MqttClient {
                     current_path = build_redirect_path(&current_path, &server_reference);
                 }
                 ConnackOutcome::Rejected(code) => {
-                    return Err(QmError::Network(format!("MQTT Connect Failed. Reason Code: {code:#x}")));
+                    return Err(QmError::Network(format!(
+                        "MQTT Connect Failed. Reason Code: {code:#x}"
+                    )));
                 }
             }
         }
@@ -360,10 +365,11 @@ impl MqttClient {
                             keep_alive: props.server_keep_alive,
                         });
                     }
-                    if (reason == 0x9C || reason == 0x9D) && props.server_reference.is_some() {
-                        let reference = props.server_reference.unwrap();
-                        self.ws.close(None).await.ok();
-                        return Ok(ConnackOutcome::Redirect(reference));
+                    if reason == 0x9C || reason == 0x9D {
+                        if let Some(reference) = props.server_reference {
+                            self.ws.close(None).await.ok();
+                            return Ok(ConnackOutcome::Redirect(reference));
+                        }
                     }
                     return Ok(ConnackOutcome::Rejected(reason));
                 }
@@ -385,7 +391,10 @@ impl MqttClient {
                 0x90 => {
                     // SUBACK: packet id(2) + properties + reason codes
                     let mut pos = 0;
-                    let id = u16::from_be_bytes([body.get(pos).copied().unwrap_or(0), body.get(pos + 1).copied().unwrap_or(0)]);
+                    let id = u16::from_be_bytes([
+                        body.get(pos).copied().unwrap_or(0),
+                        body.get(pos + 1).copied().unwrap_or(0),
+                    ]);
                     pos += 2;
                     let _props_len = read_varint(&body, &mut pos);
                     let mut reasons = Vec::new();
@@ -415,14 +424,16 @@ impl MqttClient {
                 0x30 => {
                     // PUBLISH: topic + [packet id] + properties + payload
                     let mut pos = 0;
-                    let topic = read_string(&body, &mut pos).ok_or_else(|| QmError::Network("解析 MQTT 主题失败".into()))?;
+                    let topic = read_string(&body, &mut pos)
+                        .ok_or_else(|| QmError::Network("解析 MQTT 主题失败".into()))?;
                     let qos = (kind & 0x06) >> 1;
                     if qos > 0 {
                         pos += 2; // packet id
                     }
                     let props = parse_properties(&body, &mut pos).unwrap_or_default();
                     let payload = body.get(pos..).unwrap_or(&[]).to_vec();
-                    let properties: HashMap<String, String> = props.user_property.into_iter().collect();
+                    let properties: HashMap<String, String> =
+                        props.user_property.into_iter().collect();
                     return Ok(MqttMessage {
                         topic,
                         payload,
@@ -430,7 +441,9 @@ impl MqttClient {
                     });
                 }
                 0xE0 => {
-                    return Err(QmError::Network("MQTT 连接被服务端关闭 (DISCONNECT)".into()));
+                    return Err(QmError::Network(
+                        "MQTT 连接被服务端关闭 (DISCONNECT)".into(),
+                    ));
                 }
                 _ => continue,
             }
@@ -475,9 +488,7 @@ impl MqttClient {
 }
 
 enum ConnackOutcome {
-    Accepted {
-        keep_alive: Option<u16>,
-    },
+    Accepted { keep_alive: Option<u16> },
     Redirect(String),
     Rejected(u8),
 }
@@ -524,7 +535,13 @@ mod tests {
     }
 
     /// 构造一个 PUBLISH 数据包.
-    fn build_publish(qos: u8, topic: &str, packet_id: Option<u16>, props: &[u8], payload: &[u8]) -> Vec<u8> {
+    fn build_publish(
+        qos: u8,
+        topic: &str,
+        packet_id: Option<u16>,
+        props: &[u8],
+        payload: &[u8],
+    ) -> Vec<u8> {
         let mut body = Vec::new();
         body.extend(encode_string(topic));
         if qos > 0 {
@@ -600,7 +617,10 @@ mod tests {
         let mut pos = 0;
         let _ = read_string(&body, &mut pos).unwrap();
         let props = parse_properties(&body, &mut pos).unwrap();
-        assert_eq!(props.user_property, vec![("type".to_string(), "scanned".to_string())]);
+        assert_eq!(
+            props.user_property,
+            vec![("type".to_string(), "scanned".to_string())]
+        );
         // 未知属性已被跳过, payload 起点正确.
         assert_eq!(body.get(pos..).unwrap(), b"PAYLOAD");
     }
@@ -668,7 +688,17 @@ mod tests {
 
     #[test]
     fn varint_roundtrip() {
-        for v in [0u64, 1, 127, 128, 300, 16_383, 16_384, 2_097_151, 268_435_455] {
+        for v in [
+            0u64,
+            1,
+            127,
+            128,
+            300,
+            16_383,
+            16_384,
+            2_097_151,
+            268_435_455,
+        ] {
             let enc = encode_varint(v);
             let mut pos = 0;
             let dec = read_varint(&enc, &mut pos).unwrap();
@@ -685,7 +715,7 @@ mod tests {
         let packet = build_connect("client-1", 45, &props);
         let (_, first, body) = try_parse_packet(&packet).unwrap();
         assert_eq!(first & 0xF0, 0x10); // CONNECT
-        // protocol name
+                                        // protocol name
         let mut pos = 0;
         let proto = read_string(&body, &mut pos).unwrap();
         assert_eq!(proto, "MQTT");
@@ -695,7 +725,10 @@ mod tests {
         pos += 2; // keep alive
         let parsed = parse_properties(&body, &mut pos).unwrap();
         assert_eq!(parsed.auth_method.as_deref(), Some("pass"));
-        assert_eq!(parsed.user_property, vec![("tmeAppID".to_string(), "qqmusic".to_string())]);
+        assert_eq!(
+            parsed.user_property,
+            vec![("tmeAppID".to_string(), "qqmusic".to_string())]
+        );
         let cid = read_string(&body, &mut pos).unwrap();
         assert_eq!(cid, "client-1");
     }

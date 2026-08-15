@@ -65,7 +65,11 @@ impl SonglistApi {
     }
 
     /// 创建歌单.
-    pub async fn create(&self, dirname: &str, credential: Option<&Credential>) -> Result<CreateDeleteSonglistResp> {
+    pub async fn create(
+        &self,
+        dirname: &str,
+        credential: Option<&Credential>,
+    ) -> Result<CreateDeleteSonglistResp> {
         let mut opts = RequestOptions::default();
         opts.require_login = true;
         opts.credential = credential.cloned();
@@ -82,7 +86,11 @@ impl SonglistApi {
     }
 
     /// 删除歌单.
-    pub async fn delete(&self, dirid: i64, credential: Option<&Credential>) -> Result<CreateDeleteSonglistResp> {
+    pub async fn delete(
+        &self,
+        dirid: i64,
+        credential: Option<&Credential>,
+    ) -> Result<CreateDeleteSonglistResp> {
         let mut opts = RequestOptions::default();
         opts.require_login = true;
         opts.credential = credential.cloned();
@@ -154,12 +162,20 @@ impl SonglistApi {
     }
 
     /// 收藏歌曲到 "我喜欢" 歌单 (dirid 固定为 201).
-    pub async fn like_song(&self, song_info: &[(i64, i64)], credential: Option<&Credential>) -> Result<bool> {
+    pub async fn like_song(
+        &self,
+        song_info: &[(i64, i64)],
+        credential: Option<&Credential>,
+    ) -> Result<bool> {
         self.add_songs(201, song_info, 0, credential).await
     }
 
     /// 从 "我喜欢" 歌单移除歌曲.
-    pub async fn unlike_song(&self, song_info: &[(i64, i64)], credential: Option<&Credential>) -> Result<bool> {
+    pub async fn unlike_song(
+        &self,
+        song_info: &[(i64, i64)],
+        credential: Option<&Credential>,
+    ) -> Result<bool> {
         self.del_songs(201, song_info, 0, credential).await
     }
 
@@ -172,21 +188,39 @@ impl SonglistApi {
     ///
     /// 可用于获取"我喜欢"歌单 (`dirId=201`) 的歌曲详情; 参数与响应 schema
     /// 未经 live 验证, 仅提供透传能力.
-    pub async fn raw_get_uniform_song_detail(&self, param: Value, credential: Option<&Credential>) -> Result<Value> {
+    pub async fn raw_get_uniform_song_detail(
+        &self,
+        param: Value,
+        credential: Option<&Credential>,
+    ) -> Result<Value> {
         let mut opts = RequestOptions::default();
         opts.credential = credential.cloned();
         self.base
-            .cgi("music.musicasset.PlaylistDetailRead", "GetUniformSongDetailInfo", param, opts)
+            .cgi(
+                "music.musicasset.PlaylistDetailRead",
+                "GetUniformSongDetailInfo",
+                param,
+                opts,
+            )
             .await
     }
 
     /// ⚠️ **Raw 透传** — 按目录 ID 获取歌单歌曲
     /// (官方桌面端 `PlaylistDetailRead / GetSongDetailInfoListByDirId`).
-    pub async fn raw_get_song_detail_info_list_by_dirid(&self, param: Value, credential: Option<&Credential>) -> Result<Value> {
+    pub async fn raw_get_song_detail_info_list_by_dirid(
+        &self,
+        param: Value,
+        credential: Option<&Credential>,
+    ) -> Result<Value> {
         let mut opts = RequestOptions::default();
         opts.credential = credential.cloned();
         self.base
-            .cgi("music.musicasset.PlaylistDetailRead", "GetSongDetailInfoListByDirId", param, opts)
+            .cgi(
+                "music.musicasset.PlaylistDetailRead",
+                "GetSongDetailInfoListByDirId",
+                param,
+                opts,
+            )
             .await
     }
 
@@ -194,30 +228,52 @@ impl SonglistApi {
     /// (官方桌面端 `PlaylistFavRead / IsPlaylistFan`).
     ///
     /// `param` 通常形如 `{"v_playlistId": [id]}`.
-    pub async fn raw_is_playlist_fan(&self, param: Value, credential: Option<&Credential>) -> Result<Value> {
+    pub async fn raw_is_playlist_fan(
+        &self,
+        param: Value,
+        credential: Option<&Credential>,
+    ) -> Result<Value> {
         let mut opts = RequestOptions::default();
         opts.require_login = true;
         opts.credential = credential.cloned();
         self.base
-            .cgi("music.musicasset.PlaylistFavRead", "IsPlaylistFan", param, opts)
+            .cgi(
+                "music.musicasset.PlaylistFavRead",
+                "IsPlaylistFan",
+                param,
+                opts,
+            )
             .await
     }
 
     /// ⚠️ **Raw 透传** — 对歌单歌曲重新排序
     /// (官方桌面端 `PlaylistDetailWrite / SeqSonglist`).
-    pub async fn raw_seq_songlist(&self, param: Value, credential: Option<&Credential>) -> Result<bool> {
+    pub async fn raw_seq_songlist(
+        &self,
+        param: Value,
+        credential: Option<&Credential>,
+    ) -> Result<bool> {
         let mut opts = RequestOptions::default();
         opts.require_login = true;
         opts.credential = credential.cloned();
         let data = self
             .base
-            .cgi("music.musicasset.PlaylistDetailWrite", "SeqSonglist", param, opts)
+            .cgi(
+                "music.musicasset.PlaylistDetailWrite",
+                "SeqSonglist",
+                param,
+                opts,
+            )
             .await?;
         Ok(data.get("retCode").and_then(Value::as_i64).unwrap_or(-1) == 0)
     }
 
     /// ⚠️ **Raw 透传** — 取消收藏长音频 (官方桌面端 `music.favor_system_write / do_favor`).
-    pub async fn raw_cancel_fav_audio(&self, param: Value, credential: Option<&Credential>) -> Result<Value> {
+    pub async fn raw_cancel_fav_audio(
+        &self,
+        param: Value,
+        credential: Option<&Credential>,
+    ) -> Result<Value> {
         let mut opts = RequestOptions::default();
         opts.require_login = true;
         opts.credential = credential.cloned();

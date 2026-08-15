@@ -18,13 +18,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let song = &resp.song[0].base;
     println!("歌曲: {} - {}", song.name, song.singer[0].name);
 
-    let lyric = client.lyric.get_lyric(&song.mid, 1, false, false, false, false).await?;
+    let lyric = client
+        .lyric
+        .get_lyric(&song.mid, 1, false, false, false, false)
+        .await?;
     let parsed = Lyric::parse(&lyric.lyric);
     println!("LRC 歌词行数: {}", parsed.lines.len());
-    println!("  第 3 秒处: {:?}", parsed.line_at(3000).map(|l| l.text.as_str()));
+    println!(
+        "  第 3 秒处: {:?}",
+        parsed.line_at(3000).map(|l| l.text.as_str())
+    );
 
     // 3. QRC 逐字歌词
-    if let Ok(qrc) = client.lyric.get_lyric(&song.mid, 1, true, false, false, false).await {
+    if let Ok(qrc) = client
+        .lyric
+        .get_lyric(&song.mid, 1, true, false, false, false)
+        .await
+    {
         let parsed_qrc = QrcLyric::parse(&qrc.lyric);
         println!("QRC 逐字歌词行数: {}", parsed_qrc.lines.len());
     }

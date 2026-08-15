@@ -12,17 +12,20 @@ Client
  │   ├─ version_policy         各平台版本档案 (ct/cv/UA)
  │   ├─ cgi_base_url           CGI 基础地址 (可指向 mock 服务器)
  │   ├─ credential (Mutex)     登录凭证
- │   ├─ device (Mutex)         模拟 Android 设备 (QIMEI/session 唯一状态源)
- │   ├─ state_lock (tokio)     session/QIMEI 申请的 singleflight 锁
- │   └─ limiter                请求限流器
+│   ├─ device (Mutex)         模拟 Android 设备 (设备身份, QIMEI 唯一状态源)
+│   ├─ sessions (tokio)       按账号缓存的 Android session (账号运行态)
+│   ├─ state_lock (tokio)     session/QIMEI 申请的 singleflight 锁
+│   └─ limiter                请求限流器
  └─ 各模块 (SongApi / SearchApi / ...)  均持有 Arc<ApiContext>
 ```
 
 - 模块对象只依赖 `ApiContext`，不依赖 `Client`，因此不存在引用环。
 - 所有状态（凭证、设备）通过 `Mutex` 保护，`&self` 方法即可并发调用。
-- **`Device` 是 QIMEI / Android session 的唯一状态源**：运行时获取的新值写回
-  `Device`，`Client::save_device` / `load_device` 可跨进程复用；session 还记录
-  归属账号 `session_musicid`，保证多账号下 session 不串号。
+- **`Device` 只代表设备身份**（android_id/imei/open_udid/qimei 等），运行时获取
+  的新 QIMEI 写回 `Device`，`Client::save_device` / `load_device` 可跨进程复用。
+- **Android session 是账号运行态**，按 `musicid` 缓存在 `sessions` 中
+  （不落在 `Device` 上），`session_for` 返回不可变快照，与 `credential`
+  原子一致，多账号并发不串号。
 - `state_lock` 保证多个并发 stale 请求只触发一次 session / QIMEI 申请。
 
 ## CGI 请求流程
@@ -94,21 +97,20 @@ QIMEI：
 
 `models::lyric::GetLyricResponse::parse` 会自动解密，无需手动处理。
 
-## Android session 与单一状态源
+## Android session 与账号状态
 
 Android 平台的 `comm` 需要 `uid` / `sid`。首次请求时调用
-`music.getSession.session` 获取并缓存 24 小时。
+`music.getSession.session` 获取并按账号缓存 24 小时。
 
-`Device` 是设备指纹（QIMEI / session）的**唯一状态源**：运行时获取的新
-QIMEI / session 都会写回 `Device`（`session_uid`/`session_sid`/
-`session_save_time`），`build_comm` 直接读取 `Device`，从而保证
-`Client::save_device` / `load_device` 能跨进程复用，且不存在
-"context 缓存一份、device 一份"的双状态源问题。
+`Device` 只代表**设备身份**（android_id/imei/open_udid/qimei 等），QIMEI 写回
+`Device` 并经 `Client::save_device` / `load_device` 跨进程复用。
 
-Session 归属发起请求的账号：`Device.session_musicid` 记录申请时的
-`musicid`，`ensure_session` 仅在"未过期 **且** 属于同一账号"时复用缓存，
-否则重新申请——保证多账号（per-request credential）下 session 不串号。
-并发 stale 请求经 `state_lock` singleflight 只触发一次申请。
+Android session 是**账号运行态**：`ApiContext.session_for(platform, credential)`
+按 `musicid` 缓存在 per-account 的 `HashMap` 中（不落在 `Device` 上），返回
+不可变快照 `Arc<AndroidSession>`。`build_comm` 在 `build_api_kwargs` 中
+同时持有 `credential` 与该快照，二者原子一致——两个账号并发请求时
+"credential A + session B"的 TOCTOU 竞态不再可能发生。并发 stale 请求经
+`state_lock` singleflight 只触发一次申请。
 
 ## 手机客户端二维码登录（MQTT）
 

@@ -47,7 +47,10 @@ impl RecommendApi {
     }
 
     /// 获取猜你喜欢推荐.
-    pub async fn get_guess_recommend(&self, credential: Option<&Credential>) -> Result<GuessRecommendResponse> {
+    pub async fn get_guess_recommend(
+        &self,
+        credential: Option<&Credential>,
+    ) -> Result<GuessRecommendResponse> {
         let mut opts = RequestOptions::default();
         opts.credential = credential.cloned();
         let data = self
@@ -83,7 +86,11 @@ impl RecommendApi {
     }
 
     /// 获取推荐歌单.
-    pub async fn get_recommend_songlist(&self, page: i64, num: i64) -> Result<RecommendSonglistResponse> {
+    pub async fn get_recommend_songlist(
+        &self,
+        page: i64,
+        num: i64,
+    ) -> Result<RecommendSonglistResponse> {
         let data = self
             .base
             .cgi(

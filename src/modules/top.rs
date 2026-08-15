@@ -24,13 +24,24 @@ impl TopApi {
     pub async fn get_category(&self) -> Result<TopCategoryResponse> {
         let data = self
             .base
-            .cgi("music.musicToplist.Toplist", "GetAll", json!({}), RequestOptions::default())
+            .cgi(
+                "music.musicToplist.Toplist",
+                "GetAll",
+                json!({}),
+                RequestOptions::default(),
+            )
             .await?;
         Ok(serde_json::from_value(data)?)
     }
 
     /// 获取排行榜详情及其歌曲列表.
-    pub async fn get_detail(&self, top_id: i64, num: i64, page: i64, tag: bool) -> Result<TopDetailResponse> {
+    pub async fn get_detail(
+        &self,
+        top_id: i64,
+        num: i64,
+        page: i64,
+        tag: bool,
+    ) -> Result<TopDetailResponse> {
         let mut param = json!({
             "topId": top_id,
             "offset": num * (page - 1),

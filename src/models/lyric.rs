@@ -45,9 +45,13 @@ mod tests {
     #[test]
     fn test_qrc_decrypt_reference() {
         // 由 Python 参考实现加密生成的已知密文.
-        let encrypted = "3c80fea4c8965b324d9d7f9b0778e5be0374013221f3c86fdbab3be5929b9320ea64d4ea7f2fa40a";
+        let encrypted =
+            "3c80fea4c8965b324d9d7f9b0778e5be0374013221f3c86fdbab3be5929b9320ea64d4ea7f2fa40a";
         let decrypted = qrc_decrypt(encrypted).unwrap();
-        assert_eq!(decrypted, "[ti:test][00:00.00]\u{4f60}\u{597d}\u{4e16}\u{754c}");
+        assert_eq!(
+            decrypted,
+            "[ti:test][00:00.00]\u{4f60}\u{597d}\u{4e16}\u{754c}"
+        );
     }
 }
 

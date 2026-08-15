@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use super::login::LoginApi;
 use crate::error::{QmError, Result};
 use crate::models::login::{
-    PhoneAuthCodeResult, QR, QRCodeLoginEvents, QRLoginResult, QRLoginType,
+    PhoneAuthCodeResult, QRCodeLoginEvents, QRLoginResult, QRLoginType, QR,
 };
 use crate::models::Credential;
 
@@ -44,7 +44,9 @@ impl PhoneLoginSession {
 
     /// 使用验证码完成当前会话的登录鉴权.
     pub async fn authorize(&self, auth_code: &str) -> Result<Credential> {
-        self.api.phone_authorize(&self.phone, self.is_encrypted, auth_code).await
+        self.api
+            .phone_authorize(&self.phone, self.is_encrypted, auth_code)
+            .await
     }
 }
 
@@ -175,8 +177,10 @@ impl QRCodeLoginSession {
                 }
                 Ok(Err(_)) => {
                     // 网络错误: 指数退避后重试
-                    let backoff =
-                        self.interval.error_interval().min(((1u32 << error_retries) as f64) * self.interval.default);
+                    let backoff = self
+                        .interval
+                        .error_interval()
+                        .min(((1u32 << error_retries) as f64) * self.interval.default);
                     error_retries += 1;
                     tokio::time::sleep(Duration::from_secs_f64(backoff)).await;
                     continue;
@@ -216,12 +220,10 @@ impl QRCodeLoginSession {
         for result in events {
             match result.event {
                 QRCodeLoginEvents::Done => {
-                    return result
-                        .credential
-                        .ok_or_else(|| QmError::Login {
-                            message: "登录结果缺少凭证".into(),
-                            code: -1,
-                        });
+                    return result.credential.ok_or_else(|| QmError::Login {
+                        message: "登录结果缺少凭证".into(),
+                        code: -1,
+                    });
                 }
                 QRCodeLoginEvents::Refuse => {
                     return Err(QmError::Login {
@@ -246,7 +248,10 @@ impl QRCodeLoginSession {
 }
 
 fn is_terminal(event: &QRCodeLoginEvents) -> bool {
-    matches!(event, QRCodeLoginEvents::Done | QRCodeLoginEvents::Refuse | QRCodeLoginEvents::Timeout)
+    matches!(
+        event,
+        QRCodeLoginEvents::Done | QRCodeLoginEvents::Refuse | QRCodeLoginEvents::Timeout
+    )
 }
 
 async fn sleep_until(deadline: &Instant, delay: f64) {

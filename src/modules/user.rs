@@ -47,7 +47,11 @@ impl UserApi {
     }
 
     /// 获取用户主页头部及统计信息.
-    pub async fn get_homepage(&self, euin: &str, credential: Option<&Credential>) -> Result<UserHomepageResponse> {
+    pub async fn get_homepage(
+        &self,
+        euin: &str,
+        credential: Option<&Credential>,
+    ) -> Result<UserHomepageResponse> {
         let target = self.resolve_placeholder_credential(credential);
         let mut opts = RequestOptions::default();
         opts.credential = Some(target);
@@ -64,7 +68,10 @@ impl UserApi {
     }
 
     /// 获取当前登录账号的 VIP 会员信息.
-    pub async fn get_vip_info(&self, credential: Option<&Credential>) -> Result<UserVipInfoResponse> {
+    pub async fn get_vip_info(
+        &self,
+        credential: Option<&Credential>,
+    ) -> Result<UserVipInfoResponse> {
         let mut opts = RequestOptions::default();
         opts.require_login = true;
         opts.credential = credential.cloned();
@@ -134,7 +141,12 @@ impl UserApi {
     }
 
     /// 获取好友列表.
-    pub async fn get_friend(&self, page: i64, num: i64, credential: Option<&Credential>) -> Result<UserFriendListResponse> {
+    pub async fn get_friend(
+        &self,
+        page: i64,
+        num: i64,
+        credential: Option<&Credential>,
+    ) -> Result<UserFriendListResponse> {
         let mut opts = RequestOptions::default();
         opts.require_login = true;
         opts.credential = credential.cloned();
@@ -174,7 +186,11 @@ impl UserApi {
     }
 
     /// 获取用户创建的歌单列表.
-    pub async fn get_created_songlist(&self, uin: i64, credential: Option<&Credential>) -> Result<UserCreatedSonglistResponse> {
+    pub async fn get_created_songlist(
+        &self,
+        uin: i64,
+        credential: Option<&Credential>,
+    ) -> Result<UserCreatedSonglistResponse> {
         let mut opts = RequestOptions::default();
         opts.credential = credential.cloned();
         let data = self
@@ -243,8 +259,14 @@ impl UserApi {
     }
 
     /// 收藏歌单.
-    pub async fn fav_songlist(&self, songlist_id: i64, credential: Option<&Credential>) -> Result<bool> {
-        let cred = credential.cloned().unwrap_or_else(|| self.base.credential());
+    pub async fn fav_songlist(
+        &self,
+        songlist_id: i64,
+        credential: Option<&Credential>,
+    ) -> Result<bool> {
+        let cred = credential
+            .cloned()
+            .unwrap_or_else(|| self.base.credential());
         let mut opts = RequestOptions::default();
         opts.require_login = true;
         opts.credential = credential.cloned();
@@ -267,8 +289,14 @@ impl UserApi {
     }
 
     /// 取消收藏歌单.
-    pub async fn unfav_songlist(&self, songlist_id: i64, credential: Option<&Credential>) -> Result<bool> {
-        let cred = credential.cloned().unwrap_or_else(|| self.base.credential());
+    pub async fn unfav_songlist(
+        &self,
+        songlist_id: i64,
+        credential: Option<&Credential>,
+    ) -> Result<bool> {
+        let cred = credential
+            .cloned()
+            .unwrap_or_else(|| self.base.credential());
         let mut opts = RequestOptions::default();
         opts.require_login = true;
         opts.credential = credential.cloned();
@@ -336,7 +364,11 @@ impl UserApi {
     }
 
     /// 获取用户的音乐基因数据.
-    pub async fn get_music_gene(&self, euin: &str, credential: Option<&Credential>) -> Result<UserMusicGeneResponse> {
+    pub async fn get_music_gene(
+        &self,
+        euin: &str,
+        credential: Option<&Credential>,
+    ) -> Result<UserMusicGeneResponse> {
         let mut opts = RequestOptions::default();
         opts.credential = credential.cloned();
         let data = self
@@ -373,13 +405,23 @@ impl UserApi {
         opts.sign = true;
         let data = self
             .base
-            .cgi("music.feedback.FeedbackBlack", "GetDislikeList", param, opts)
+            .cgi(
+                "music.feedback.FeedbackBlack",
+                "GetDislikeList",
+                param,
+                opts,
+            )
             .await?;
         Ok(serde_json::from_value(data)?)
     }
 
     /// 添加不喜欢.
-    pub async fn add_dislike(&self, id_type: DislikeIdType, values: &[i64], credential: Option<&Credential>) -> Result<bool> {
+    pub async fn add_dislike(
+        &self,
+        id_type: DislikeIdType,
+        values: &[i64],
+        credential: Option<&Credential>,
+    ) -> Result<bool> {
         let key = id_type.as_key();
         let id_type_val = id_type as i64;
         let items: Vec<Value> = values
@@ -402,7 +444,12 @@ impl UserApi {
     }
 
     /// 取消不喜欢.
-    pub async fn cancel_dislike(&self, id_type: DislikeIdType, values: &[i64], credential: Option<&Credential>) -> Result<bool> {
+    pub async fn cancel_dislike(
+        &self,
+        id_type: DislikeIdType,
+        values: &[i64],
+        credential: Option<&Credential>,
+    ) -> Result<bool> {
         let key = id_type.as_key();
         let id_type_val = id_type as i64;
         let items: Vec<Value> = values
@@ -439,7 +486,11 @@ impl UserApi {
                 opts1,
             )
             .await?;
-        let token = data1.get("Token").and_then(Value::as_str).unwrap_or("").to_string();
+        let token = data1
+            .get("Token")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
         let mut opts2 = RequestOptions::default();
         opts2.require_login = true;
         opts2.credential = credential.cloned();
@@ -464,7 +515,11 @@ impl UserApi {
     ///
     /// 与 `get_vip_info` (VipLogin) 不同, 该接口为桌面端专用; 参数与响应
     /// schema 未经 live 验证, 仅提供透传能力.
-    pub async fn raw_get_user_vip_info(&self, param: Value, credential: Option<&Credential>) -> Result<Value> {
+    pub async fn raw_get_user_vip_info(
+        &self,
+        param: Value,
+        credential: Option<&Credential>,
+    ) -> Result<Value> {
         let mut opts = RequestOptions::default();
         opts.require_login = true;
         opts.credential = credential.cloned();
@@ -477,12 +532,21 @@ impl UserApi {
     /// (官方桌面端 `userInfo.BaseUserInfoServer / get_user_baseinfo_v2`).
     ///
     /// `param` 通常形如 `{"vec_uin": ["xxx"], "need_profile": 1}`.
-    pub async fn raw_get_user_base_info(&self, param: Value, credential: Option<&Credential>) -> Result<Value> {
+    pub async fn raw_get_user_base_info(
+        &self,
+        param: Value,
+        credential: Option<&Credential>,
+    ) -> Result<Value> {
         let mut opts = RequestOptions::default();
         opts.require_login = true;
         opts.credential = credential.cloned();
         self.base
-            .cgi("userInfo.BaseUserInfoServer", "get_user_baseinfo_v2", param, opts)
+            .cgi(
+                "userInfo.BaseUserInfoServer",
+                "get_user_baseinfo_v2",
+                param,
+                opts,
+            )
             .await
     }
 
@@ -494,7 +558,12 @@ impl UserApi {
     ///
     /// 默认不编译, 需显式启用 `--features experimental`.
     #[cfg(feature = "experimental")]
-    pub async fn focus_singer(&self, action: ConcernAction, mid: &str, credential: Option<&Credential>) -> Result<bool> {
+    pub async fn focus_singer(
+        &self,
+        action: ConcernAction,
+        mid: &str,
+        credential: Option<&Credential>,
+    ) -> Result<bool> {
         let mut opts = RequestOptions::default();
         opts.require_login = true;
         opts.credential = credential.cloned();
@@ -523,7 +592,12 @@ impl UserApi {
     /// 与当前实现 (`vid`/`opType`) 可能不符; 默认不编译, 需显式启用
     /// `--features experimental`.
     #[cfg(feature = "experimental")]
-    pub async fn fav_mv(&self, vid: &str, action: MvFavAction, credential: Option<&Credential>) -> Result<Value> {
+    pub async fn fav_mv(
+        &self,
+        vid: &str,
+        action: MvFavAction,
+        credential: Option<&Credential>,
+    ) -> Result<Value> {
         let mut opts = RequestOptions::default();
         opts.require_login = true;
         opts.credential = credential.cloned();
@@ -539,22 +613,40 @@ impl UserApi {
 
     /// ⚠️ **Raw 透传** — 获取收藏的电台列表
     /// (官方桌面端 `music.favorSystemRead.FavorSystem / get_favor_list`).
-    pub async fn raw_get_favor_list(&self, param: Value, credential: Option<&Credential>) -> Result<Value> {
+    pub async fn raw_get_favor_list(
+        &self,
+        param: Value,
+        credential: Option<&Credential>,
+    ) -> Result<Value> {
         let mut opts = RequestOptions::default();
         opts.require_login = true;
         opts.credential = credential.cloned();
         self.base
-            .cgi("music.favorSystemRead.FavorSystem", "get_favor_list", param, opts)
+            .cgi(
+                "music.favorSystemRead.FavorSystem",
+                "get_favor_list",
+                param,
+                opts,
+            )
             .await
     }
 
     /// ⚠️ **Raw 透传** — 获取收藏专辑列表
     /// (官方桌面端 `music.musicasset.AlbumFavRead / GetAlbumFavInfo`).
-    pub async fn raw_get_collect_album_list(&self, param: Value, credential: Option<&Credential>) -> Result<Value> {
+    pub async fn raw_get_collect_album_list(
+        &self,
+        param: Value,
+        credential: Option<&Credential>,
+    ) -> Result<Value> {
         let mut opts = RequestOptions::default();
         opts.credential = credential.cloned();
         self.base
-            .cgi("music.musicasset.AlbumFavRead", "GetAlbumFavInfo", param, opts)
+            .cgi(
+                "music.musicasset.AlbumFavRead",
+                "GetAlbumFavInfo",
+                param,
+                opts,
+            )
             .await
     }
 }

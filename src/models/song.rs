@@ -3,7 +3,7 @@
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::base::{MV, Singer, Song, SongList};
+use super::base::{Singer, Song, SongList, MV};
 use crate::jsonpath_model;
 use crate::models::de::null_as_default;
 
@@ -45,13 +45,13 @@ pub struct ContentItem {
 }
 
 jsonpath_model!(GetSongDetailResponse {
-    company: "$.info.company.content" => Vec<ContentItem>,
-    genre: "$.info.genre.content" => Vec<ContentItem>,
-    intro: "$.info.intro.content" => Vec<ContentItem>,
-    lan: "$.info.lan.content" => Vec<ContentItem>,
-    pub_time: "$.info.pub_time.content" => Vec<ContentItem>,
-    extras: "$.info.extras" => Value,
-    track: "$.track_info" => Song,
+    company: "$.info.company.content" => default(Vec<ContentItem>),
+    genre: "$.info.genre.content" => default(Vec<ContentItem>),
+    intro: "$.info.intro.content" => default(Vec<ContentItem>),
+    lan: "$.info.lan.content" => default(Vec<ContentItem>),
+    pub_time: "$.info.pub_time.content" => default(Vec<ContentItem>),
+    extras: "$.info.extras" => default(Value),
+    track: "$.track_info" => strict(Song),
 });
 
 /// 相似歌曲推荐分组.
@@ -66,8 +66,16 @@ impl<'de> Deserialize<'de> for SimilarSongGroup {
     fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
         let raw = Value::deserialize(de)?;
         Ok(SimilarSongGroup {
-            title_template: raw.get("title_template").and_then(Value::as_str).unwrap_or("").to_string(),
-            title_content: raw.get("title_content").and_then(Value::as_str).unwrap_or("").to_string(),
+            title_template: raw
+                .get("title_template")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            title_content: raw
+                .get("title_content")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
             song: crate::jsonpath::extract_typed::<Vec<Song>>(&raw, "$.songs[*].track"),
         })
     }

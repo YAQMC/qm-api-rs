@@ -94,7 +94,12 @@ impl HelperApi {
         let mut opts = RequestOptions::default();
         opts.comm = Some(json!({ "ct": 31, "cv": cv }));
         self.base
-            .cgi("platform.uniteUpdate.UniteUpdateSvr", "QueryUpdate", json!({}), opts)
+            .cgi(
+                "platform.uniteUpdate.UniteUpdateSvr",
+                "QueryUpdate",
+                json!({}),
+                opts,
+            )
             .await
     }
 }

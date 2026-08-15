@@ -185,8 +185,14 @@ mod tests {
 
     #[test]
     fn require_success_maps_special_codes() {
-        assert!(matches!(CgiReply::new(2000, Value::Null).require_success(), Err(QmError::SignatureRequired)));
-        assert!(matches!(CgiReply::new(2001, Value::Null).require_success(), Err(QmError::RateLimited)));
+        assert!(matches!(
+            CgiReply::new(2000, Value::Null).require_success(),
+            Err(QmError::SignatureRequired)
+        ));
+        assert!(matches!(
+            CgiReply::new(2001, Value::Null).require_success(),
+            Err(QmError::RateLimited)
+        ));
         assert!(matches!(
             CgiReply::new(104401, Value::Null).require_success(),
             Err(QmError::CredentialExpired(_))
@@ -203,7 +209,10 @@ mod tests {
     #[test]
     fn require_success_allowing_errors_on_other_code() {
         let reply = CgiReply::new(2001, Value::Null);
-        assert!(matches!(reply.require_success_allowing(&[10007]), Err(QmError::RateLimited)));
+        assert!(matches!(
+            reply.require_success_allowing(&[10007]),
+            Err(QmError::RateLimited)
+        ));
     }
 
     #[test]

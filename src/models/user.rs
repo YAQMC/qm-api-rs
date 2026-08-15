@@ -3,7 +3,7 @@
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::base::{Album, MV, Singer, SongList};
+use super::base::{Album, Singer, SongList, MV};
 use crate::jsonpath_model;
 
 /// 用户歌单列表中的单个歌单摘要.
@@ -288,13 +288,13 @@ pub struct RelationUser {
 }
 
 jsonpath_model!(UserRelationListResponse {
-    total: "$.Total" => i64,
-    users: "$.List[*]" => Vec<RelationUser>,
-    has_more: "$.HasMore" => bool,
-    last_pos: "$.LastPos" => String,
-    msg: "$.Msg" => String,
-    lock_flag: "$.LockFlag" => i64,
-    lock_msg: "$.LockMsg" => String,
+    total: "$.Total" => strict(i64),
+    users: "$.List[*]" => strict(Vec<RelationUser>),
+    has_more: "$.HasMore" => default(bool),
+    last_pos: "$.LastPos" => default(String),
+    msg: "$.Msg" => default(String),
+    lock_flag: "$.LockFlag" => default(i64),
+    lock_msg: "$.LockMsg" => default(String),
 });
 
 /// 好友列表中的单个好友条目.

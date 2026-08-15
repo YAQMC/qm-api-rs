@@ -68,18 +68,27 @@ impl VersionPolicy {
     }
 
     /// 构建统一 `comm` 参数.
-    pub fn build_comm(
+    ///
+    /// `session` 为 Android 平台该账号的不可变会话快照 (`uid`/`sid`),
+    /// 与 `credential` 一起原子使用, 避免多账号并发时 session 串号.
+    pub(crate) fn build_comm(
         &self,
         platform: Platform,
         credential: &Credential,
         device: &crate::Device,
         qimei: Option<&(String, String)>,
+        session: Option<&crate::context::AndroidSession>,
     ) -> Value {
         let profile = self.get_profile(platform);
         match platform {
             Platform::Android => {
-                let (q16, q36) = qimei.map(|q| (q.0.clone(), q.1.clone())).unwrap_or_default();
+                let (q16, q36) = qimei
+                    .map(|q| (q.0.clone(), q.1.clone()))
+                    .unwrap_or_default();
                 let guid = device.open_udid.clone();
+                let (uid, sid) = session
+                    .map(|s| (s.uid.clone(), s.sid.clone()))
+                    .unwrap_or_default();
                 json!({
                     "ct": profile.ct,
                     "cv": profile.cv,
@@ -93,9 +102,9 @@ impl VersionPolicy {
                     "QIMEI36": q36,
                     "OpenUDID": guid,
                     "udid": guid,
-                    "uid": device.session_uid.clone().unwrap_or_default(),
+                    "uid": uid,
                     "OpenUDID2": guid,
-                    "sid": device.session_sid.clone().unwrap_or_default(),
+                    "sid": sid,
                     "aid": device.android_id.clone(),
                     "os_ver": device.version.release.clone(),
                     "phonetype": device.model.clone(),
@@ -141,11 +150,9 @@ impl VersionPolicy {
                 let ua_version = profile.ua_version.unwrap_or(profile.cv);
                 format!("QQMusic {ua_version}(android {})", device.version.release)
             }
-            _ => {
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+            _ => "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
                  (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                    .to_string()
-            }
+                .to_string(),
         }
     }
 

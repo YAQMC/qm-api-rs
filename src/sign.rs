@@ -27,8 +27,14 @@ pub fn zzc_sign(payload: &[u8]) -> String {
     hasher.update(payload);
     let hash_hex = hex::encode(hasher.finalize()).to_uppercase();
 
-    let part1: String = PART_1_INDEXES.iter().map(|&i| hash_hex[i..i + 1].to_string()).collect();
-    let part2: String = PART_2_INDEXES.iter().map(|&i| hash_hex[i..i + 1].to_string()).collect();
+    let part1: String = PART_1_INDEXES
+        .iter()
+        .map(|&i| hash_hex[i..i + 1].to_string())
+        .collect();
+    let part2: String = PART_2_INDEXES
+        .iter()
+        .map(|&i| hash_hex[i..i + 1].to_string())
+        .collect();
 
     let mut part3 = [0u8; 20];
     for (i, v) in SCRAMBLE_VALUES.iter().enumerate() {
@@ -51,7 +57,10 @@ mod tests {
         // 由 Python 参考实现生成的已知值.
         let payload = br#"{"comm":{"ct":19,"cv":1,"tmeAppID":"qqmusic"}}"#;
         let sign = zzc_sign(payload);
-        assert!(sign.starts_with("zzc"), "sign should start with zzc, got {sign}");
+        assert!(
+            sign.starts_with("zzc"),
+            "sign should start with zzc, got {sign}"
+        );
         assert_eq!(sign.len(), 44);
         assert_eq!(sign, "zzc667ce25ux835nhknj1bysb9mzdj7witfce03a5004");
     }

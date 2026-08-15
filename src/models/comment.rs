@@ -6,9 +6,10 @@ use serde_json::Value;
 use crate::jsonpath_model;
 
 /// 评论业务类型.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CommentBizType {
     /// 普通歌曲.
+    #[default]
     Song,
     /// 专辑.
     Album,
@@ -38,12 +39,6 @@ impl CommentBizType {
             CommentBizType::Audio => 6,
             CommentBizType::AudioAlbum => 7,
         }
-    }
-}
-
-impl Default for CommentBizType {
-    fn default() -> Self {
-        CommentBizType::Song
     }
 }
 

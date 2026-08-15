@@ -22,7 +22,10 @@ pub enum ErrorCategory {
 }
 
 /// 敏感键名 (JSON 键 / form·query 键, 不含 `=`).
-const SENSITIVE_KEYS: [&str; 8] = [
+///
+/// 包含登录态令牌与媒体授权数据 (purl/vkey/ekey/signed URL), 避免
+/// SDK Error → 宿主日志时泄漏播放授权信息.
+const SENSITIVE_KEYS: [&str; 11] = [
     "qm_keyst",
     "musickey",
     "access_token",
@@ -31,6 +34,9 @@ const SENSITIVE_KEYS: [&str; 8] = [
     "p_skey",
     "qrsig",
     "uin",
+    "purl",
+    "vkey",
+    "ekey",
 ];
 
 /// 递归对 JSON 值做 key-based 脱敏: 敏感键的值替换为 `[redacted]`.
@@ -143,6 +149,13 @@ pub enum QmError {
     #[error("deserialize error: {0}")]
     Deserialize(String),
 
+    /// 协议/结构错误 (响应缺失或字段类型不符合协议, 不视为成功).
+    #[error("protocol error at {stage}: {message}")]
+    Protocol {
+        stage: &'static str,
+        message: String,
+    },
+
     /// 响应内容解析失败.
     #[error("api data error: {0}")]
     ApiData(String),
@@ -177,8 +190,14 @@ impl QmError {
     pub fn category(&self) -> ErrorCategory {
         match self {
             QmError::Network(_) => ErrorCategory::Network,
-            QmError::Http { status, .. } if *status >= 500 => ErrorCategory::Server,
-            QmError::Http { .. } => ErrorCategory::BadRequest,
+            QmError::Http { status, .. } => match *status {
+                401 => ErrorCategory::Auth,
+                403 => ErrorCategory::Permission,
+                404 => ErrorCategory::NotFound,
+                429 => ErrorCategory::RateLimit,
+                s if s >= 500 => ErrorCategory::Server,
+                _ => ErrorCategory::BadRequest,
+            },
             QmError::GlobalApi { .. } => ErrorCategory::Server,
             QmError::CgiApi { code, .. } => classify_cgi_code(*code),
             QmError::SignatureRequired => ErrorCategory::BadRequest,
@@ -188,6 +207,7 @@ impl QmError {
             QmError::Login { .. } => ErrorCategory::Auth,
             QmError::CredentialRefresh(_) => ErrorCategory::Auth,
             QmError::Deserialize(_) => ErrorCategory::BadRequest,
+            QmError::Protocol { .. } => ErrorCategory::BadRequest,
             QmError::ApiData(_) => ErrorCategory::Server,
             QmError::JsonPath(_) => ErrorCategory::BadRequest,
             QmError::ValueError(_) => ErrorCategory::BadRequest,
@@ -278,17 +298,67 @@ mod tests {
 
     #[test]
     fn categories_and_retryable() {
-        assert_eq!(QmError::Network("x".into()).category(), ErrorCategory::Network);
-        assert_eq!(QmError::RateLimited.category(), ErrorCategory::RateLimit);
-        assert_eq!(QmError::CgiApi { code: 1000, data: String::new() }.category(), ErrorCategory::Auth);
         assert_eq!(
-            QmError::Http { status: 500, body: String::new() }.category(),
+            QmError::Network("x".into()).category(),
+            ErrorCategory::Network
+        );
+        assert_eq!(QmError::RateLimited.category(), ErrorCategory::RateLimit);
+        assert_eq!(
+            QmError::CgiApi {
+                code: 1000,
+                data: String::new()
+            }
+            .category(),
+            ErrorCategory::Auth
+        );
+        assert_eq!(
+            QmError::Http {
+                status: 500,
+                body: String::new()
+            }
+            .category(),
             ErrorCategory::Server
+        );
+        assert_eq!(
+            QmError::Http {
+                status: 429,
+                body: String::new()
+            }
+            .category(),
+            ErrorCategory::RateLimit
+        );
+        assert_eq!(
+            QmError::Http {
+                status: 401,
+                body: String::new()
+            }
+            .category(),
+            ErrorCategory::Auth
+        );
+        assert_eq!(
+            QmError::Http {
+                status: 403,
+                body: String::new()
+            }
+            .category(),
+            ErrorCategory::Permission
+        );
+        assert_eq!(
+            QmError::Http {
+                status: 404,
+                body: String::new()
+            }
+            .category(),
+            ErrorCategory::NotFound
         );
 
         assert!(QmError::Network("x".into()).is_retryable());
         assert!(QmError::RateLimited.is_retryable());
-        assert!(QmError::CgiApi { code: 104604, data: String::new() }.is_retryable());
+        assert!(QmError::CgiApi {
+            code: 104604,
+            data: String::new()
+        }
+        .is_retryable());
         assert!(!QmError::CredentialExpired("x".into()).is_retryable());
         assert!(!QmError::ValueError("x".into()).is_retryable());
     }

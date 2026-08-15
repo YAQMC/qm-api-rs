@@ -17,7 +17,7 @@ pub mod songlist;
 pub mod top;
 pub mod user;
 
-pub use base::{Album, File, MV, Pay, Singer, Song, SongList};
+pub use base::{Album, File, Pay, Singer, Song, SongList, MV};
 pub use request::Credential;
 
 /// 按提取策略反序列化 JSONPath 字段 (由 `jsonpath_model!` 内部使用).
@@ -35,11 +35,20 @@ macro_rules! jsonpath_extract {
     };
 }
 
+/// 按提取策略推导字段类型 (由 `jsonpath_model!` 内部使用).
+#[doc(hidden)]
+#[macro_export]
+macro_rules! jsonpath_field_ty {
+    (optional, $ty:ty) => { Option<$ty> };
+    (default, $ty:ty) => { $ty };
+    (strict, $ty:ty) => { $ty };
+}
+
 /// 定义通过 JSONPath 提取字段的响应模型.
 ///
 /// 每个字段声明 `JSONPath` 表达式与类型; 提取策略三选一:
 /// - `field: expr => Ty`            —— lenient, 缺失时用默认值 (仅用于明确可容忍的字段);
-/// - `field: expr => optional(Ty)`  —— 缺失时得到 `Option<Ty>`;
+/// - `field: expr => optional(Ty)`  —— 缺失时得到 `Option<Ty>` (字段类型即为 `Option<Ty>`);
 /// - `field: expr => strict(Ty)`    —— 缺失/类型不符即反序列化报错 (暴露 schema drift).
 #[macro_export]
 macro_rules! jsonpath_model {
@@ -47,7 +56,7 @@ macro_rules! jsonpath_model {
         #[derive(Debug, Clone, Default)]
         #[allow(non_snake_case)]
         pub struct $name {
-            $( $(#[$meta])* pub $field: $ty ),*
+            $( $(#[$meta])* pub $field: $crate::jsonpath_field_ty!($ext, $ty) ),*
         }
         impl<'de> ::serde::Deserialize<'de> for $name {
             fn deserialize<D: ::serde::Deserializer<'de>>(
