@@ -41,6 +41,8 @@
 
 mod client;
 mod context;
+#[cfg(test)]
+mod contract_tests;
 pub mod credential_store;
 mod device;
 mod error;
@@ -64,7 +66,7 @@ pub mod modules;
 pub use client::{CgiOptions, Client, HttpOptions};
 pub use credential_store::{CredentialPersist, CredentialStore, FileCredentialPersist};
 pub use device::{random_imei, Device, OSVersion};
-pub use error::{ErrorCategory, QmError, Result};
+pub use error::{ErrorCategory, NetworkError, NetworkErrorKind, QmError, Result};
 pub use media::MediaSource;
 pub use models::song::SheetType;
 pub use models::user::{ConcernAction, DislikeIdType, MvFavAction};

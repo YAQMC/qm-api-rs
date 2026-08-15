@@ -124,7 +124,9 @@ impl QRCodeLoginSession {
         if self.qrcode.is_none() {
             self.qrcode = Some(self.api.get_qrcode(self.login_type).await?);
         }
-        Ok(self.qrcode.clone().expect("qrcode"))
+        self.qrcode
+            .clone()
+            .ok_or_else(|| QmError::ApiData("二维码未就绪".into()))
     }
 
     /// 轮询二维码状态, 逐个产出事件.

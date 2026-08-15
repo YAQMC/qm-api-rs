@@ -59,7 +59,6 @@ pub struct HttpOptions {
     pub cookies: Vec<(String, String)>,
     pub json: Option<Value>,
     pub data: Option<Value>,
-    pub disable_parse: bool,
     pub credential: Option<Credential>,
     pub timeout: Option<std::time::Duration>,
 }
@@ -144,9 +143,11 @@ impl Client {
         &self.context
     }
 
-    /// 将当前设备指纹 (含 QIMEI / session) 持久化到文件.
+    /// 将当前设备指纹持久化到文件.
     ///
-    /// 下次启动时调用 `load_device` 恢复, 可避免每次重新申请 QIMEI / session.
+    /// 仅包含**设备身份** (android_id/imei/open_udid/QIMEI 等), 不含
+    /// Android session —— session 是账号运行态, 按账号缓存在内存中,
+    /// 不随设备持久化.
     pub fn save_device(&self, path: &std::path::Path) -> Result<()> {
         let device = self.context.device();
         let bytes = serde_json::to_vec(&device).map_err(QmError::from)?;
@@ -154,6 +155,8 @@ impl Client {
     }
 
     /// 从文件加载设备指纹.
+    ///
+    /// 更换设备身份会使既有 Android session 缓存失效 (下次按需重新申请).
     pub fn load_device(&self, path: &std::path::Path) -> Result<()> {
         let bytes = std::fs::read(path).map_err(QmError::from)?;
         let device: crate::Device = serde_json::from_slice(&bytes).map_err(QmError::from)?;

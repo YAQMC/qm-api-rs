@@ -2,6 +2,7 @@
 
 use reqwest::header::{HeaderMap, HeaderValue};
 use serde_json::{json, Value};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -35,11 +36,16 @@ pub(crate) struct AndroidSession {
     pub uid: String,
     pub sid: String,
     pub acquired_at: i64,
+    /// 申请时对应的设备 epoch (设备身份更换后缓存自动失效).
+    pub device_epoch: u64,
 }
 
 impl AndroidSession {
-    fn fresh(&self) -> bool {
-        !self.uid.is_empty() && !self.sid.is_empty() && now() - self.acquired_at < 86_400
+    fn valid(&self, current_epoch: u64) -> bool {
+        !self.uid.is_empty()
+            && !self.sid.is_empty()
+            && now() - self.acquired_at < 86_400
+            && self.device_epoch == current_epoch
     }
 }
 
@@ -61,6 +67,8 @@ pub struct ApiContext {
     pub qimei_url: String,
     credential: Mutex<Credential>,
     device: Mutex<Device>,
+    /// 设备身份 epoch (每次 `set_device` 递增, 使既有 session 缓存失效).
+    device_epoch: std::sync::atomic::AtomicU64,
     /// 按账号缓存的 Android session (`musicid → AndroidSession`).
     sessions: tokio::sync::Mutex<std::collections::HashMap<i64, AndroidSession>>,
     /// 会话 / QIMEI 申请时的 singleflight 锁 (避免并发 stale 请求重复申请).
@@ -102,12 +110,10 @@ impl ApiContext {
             .brotli(true)
             .cookie_store(true);
         if let Some(p) = proxy {
-            let proxy = reqwest::Proxy::all(p).map_err(|e| QmError::Network(e.to_string()))?;
+            let proxy = reqwest::Proxy::all(p).map_err(QmError::from)?;
             builder = builder.proxy(proxy);
         }
-        let http = builder
-            .build()
-            .map_err(|e| QmError::Network(e.to_string()))?;
+        let http = builder.build().map_err(QmError::from)?;
         Ok(ApiContext {
             http,
             platform: platform.unwrap_or(Platform::Android),
@@ -116,6 +122,7 @@ impl ApiContext {
             qimei_url: "https://api.tencentmusic.com/tme/trpc/proxy".to_string(),
             credential: Mutex::new(credential.unwrap_or_default()),
             device: Mutex::new(Device::random()),
+            device_epoch: std::sync::atomic::AtomicU64::new(0),
             sessions: tokio::sync::Mutex::new(std::collections::HashMap::new()),
             state_lock: tokio::sync::Mutex::new(()),
             limiter: TokenBucket::default(),
@@ -144,8 +151,17 @@ impl ApiContext {
     }
 
     /// 替换设备 (例如从持久化文件加载).
+    ///
+    /// 更换设备身份会让此前申请的 Android session 失效 (通过 device epoch
+    /// 使缓存全部过期, 下次请求按需重新申请).
     pub fn set_device(&self, device: Device) {
         *self.device.lock().unwrap() = device;
+        self.device_epoch.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// 使指定账号的 Android session 失效 (登出/凭证刷新后调用).
+    pub(crate) async fn invalidate_session(&self, musicid: i64) {
+        self.sessions.lock().await.remove(&musicid);
     }
 
     /// 读取当前缓存的 QIMEI (从 `Device`, 单一状态源).
@@ -180,10 +196,11 @@ impl ApiContext {
                 "session_for 仅适用于 Android 平台".into(),
             ));
         }
+        let epoch = self.device_epoch.load(std::sync::atomic::Ordering::Relaxed);
         {
             let sessions = self.sessions.lock().await;
             if let Some(s) = sessions.get(&credential.musicid) {
-                if s.fresh() {
+                if s.valid(epoch) {
                     return Ok(Arc::new(s.clone()));
                 }
             }
@@ -192,7 +209,7 @@ impl ApiContext {
         {
             let sessions = self.sessions.lock().await;
             if let Some(s) = sessions.get(&credential.musicid) {
-                if s.fresh() {
+                if s.valid(epoch) {
                     return Ok(Arc::new(s.clone()));
                 }
             }
@@ -234,7 +251,7 @@ impl ApiContext {
             .header("User-Agent", user_agent)
             .send()
             .await
-            .map_err(|e| QmError::Network(e.to_string()))?;
+            .map_err(QmError::from)?;
         let status = resp.status().as_u16();
         if status != 200 {
             return Err(QmError::http(status, resp.text().await.unwrap_or_default()));
@@ -250,6 +267,7 @@ impl ApiContext {
             uid,
             sid,
             acquired_at: now(),
+            device_epoch: self.device_epoch.load(std::sync::atomic::Ordering::Relaxed),
         })
     }
 
@@ -312,7 +330,7 @@ impl ApiContext {
             .json(&body)
             .send()
             .await
-            .map_err(|e| QmError::Network(e.to_string()))?;
+            .map_err(QmError::from)?;
         let text = resp.text().await?;
         if let Some(q) = qimei::parse_qimei_response(&text) {
             // 写回 Device (单一状态源), 使 save_device 能持久化 QIMEI.
@@ -465,15 +483,9 @@ impl ApiContext {
         for (k, v) in &query_params {
             request = request.query(&[(k, v)]);
         }
-        let resp = request
-            .send()
-            .await
-            .map_err(|e| QmError::Network(e.to_string()))?;
+        let resp = request.send().await.map_err(QmError::from)?;
         let status = resp.status().as_u16();
-        let text = resp
-            .text()
-            .await
-            .map_err(|e| QmError::Network(e.to_string()))?;
+        let text = resp.text().await.map_err(QmError::from)?;
         if status != 200 {
             return Err(QmError::http(status, text));
         }
@@ -532,21 +544,45 @@ impl ApiContext {
         for (k, v) in &query_params {
             request = request.query(&[(k, v)]);
         }
-        let resp = request
-            .send()
-            .await
-            .map_err(|e| QmError::Network(e.to_string()))?;
+        let resp = request.send().await.map_err(QmError::from)?;
         let status = resp.status().as_u16();
-        let text = resp
-            .text()
-            .await
-            .map_err(|e| QmError::Network(e.to_string()))?;
+        let text = resp.text().await.map_err(QmError::from)?;
         if status != 200 {
             return Err(QmError::http(status, text));
         }
+        // 只解析一次整个 envelope, 再逐个提取 req_N (避免 N 次全量 parse).
+        let env: Value = serde_json::from_str(&text)?;
+        let env_code =
+            env.get("code")
+                .and_then(Value::as_i64)
+                .ok_or_else(|| QmError::Protocol {
+                    stage: "cgi-envelope",
+                    message: "missing or invalid global code".into(),
+                })?;
+        if env_code != 0 {
+            return Err(QmError::GlobalApi {
+                code: env_code,
+                data: crate::error::redact_payload(&text, 400),
+            });
+        }
         let mut out = Vec::with_capacity(requests.len());
         for i in 0..requests.len() {
-            out.push(parse_cgi_envelope(&text, i)?);
+            let req0 = env
+                .get(format!("req_{i}"))
+                .cloned()
+                .ok_or_else(|| QmError::Protocol {
+                    stage: "cgi-envelope",
+                    message: format!("missing req_{i}"),
+                })?;
+            let code =
+                req0.get("code")
+                    .and_then(Value::as_i64)
+                    .ok_or_else(|| QmError::Protocol {
+                        stage: "cgi-req",
+                        message: format!("missing or invalid req_{i}.code"),
+                    })?;
+            let data = req0.get("data").cloned().unwrap_or(Value::Null);
+            out.push(CgiReply::new(code, data));
         }
         Ok(out)
     }
@@ -563,19 +599,13 @@ impl ApiContext {
         for (k, v) in &cookies {
             request = request.header("Cookie", format!("{k}={v}"));
         }
-        let resp = request
-            .send()
-            .await
-            .map_err(|e| QmError::Network(e.to_string()))?;
+        let resp = request.send().await.map_err(QmError::from)?;
         let status = resp.status().as_u16();
         if status != 200 {
             let text = resp.text().await.unwrap_or_default();
             return Err(QmError::http(status, text));
         }
-        let bytes = resp
-            .bytes()
-            .await
-            .map_err(|e| QmError::Network(e.to_string()))?;
+        let bytes = resp.bytes().await.map_err(QmError::from)?;
         Ok(bytes.to_vec())
     }
 
@@ -608,15 +638,9 @@ impl ApiContext {
         if let Some(t) = opts.timeout {
             request = request.timeout(t);
         }
-        let resp = request
-            .send()
-            .await
-            .map_err(|e| QmError::Network(e.to_string()))?;
+        let resp = request.send().await.map_err(QmError::from)?;
         let status = resp.status().as_u16();
-        let text = resp
-            .text()
-            .await
-            .map_err(|e| QmError::Network(e.to_string()))?;
+        let text = resp.text().await.map_err(QmError::from)?;
         if status != 200 {
             return Err(QmError::http(status, text));
         }
@@ -1025,5 +1049,40 @@ mod tests {
             .unwrap();
         assert_eq!(session.uid, "u1");
         assert_eq!(ctx.qimei(), Some(("q16".into(), "q36".into())));
+    }
+
+    #[tokio::test]
+    async fn set_device_invalidates_cached_session_via_epoch() {
+        use axum::routing::post;
+        use std::sync::atomic::Ordering as AOrdering;
+        let base = spawn_mock(
+            "/cgi-bin/musicu.fcg",
+            post(|| async {
+                r#"{"code":0,"req_0":{"code":0,"data":{"session":{"uid":"u1","sid":"s1"}}}}"#
+            }),
+        )
+        .await;
+        let qimei_body = r#"{"data":"{\"data\":{\"q16\":\"q16\",\"q36\":\"q36\"}}"}"#;
+        let base2 = spawn_mock("/tme/trpc/proxy", post(move || async move { qimei_body })).await;
+
+        let mut ctx = ApiContext::new_with_proxy(None, Some(Platform::Android), None).unwrap();
+        ctx.cgi_base_url = format!("{base}/cgi-bin");
+        ctx.qimei_url = format!("{base2}/tme/trpc/proxy");
+
+        let mut cred = Credential::default();
+        cred.musicid = 5;
+        cred.str_musicid = "5".into();
+
+        let s1 = ctx.session_for(Platform::Android, &cred).await.unwrap();
+        assert_eq!(s1.uid, "u1");
+
+        // 更换设备身份 → epoch 递增 → 原缓存失效, 下次重新申请.
+        let epoch_before = ctx.device_epoch.load(AOrdering::Relaxed);
+        ctx.set_device(Device::random());
+        assert_eq!(ctx.device_epoch.load(AOrdering::Relaxed), epoch_before + 1);
+
+        let s2 = ctx.session_for(Platform::Android, &cred).await.unwrap();
+        assert_eq!(s2.uid, "u1"); // mock 恒定返回, 但确实重新申请 (epoch 已变).
+        assert_ne!(s1.device_epoch, s2.device_epoch);
     }
 }

@@ -144,7 +144,20 @@ impl LoginApi {
                 .await?;
             let value: Value = serde_json::from_str(&text)?;
             let code = value.get("code").and_then(Value::as_i64).unwrap_or(-1);
-            return Ok(code != 0);
+            // 仅已知的凭证过期码视为过期; 未知 code 返回错误而非一律视为过期.
+            if code == 0 {
+                return Ok(false);
+            }
+            if [1000, 104401, 104400].contains(&code) {
+                return Ok(true);
+            }
+            return Err(QmError::Login {
+                message: format!(
+                    "检查过期失败: {}",
+                    crate::error::redact_payload(&value.to_string(), 200)
+                ),
+                code,
+            });
         }
 
         let mut opts = RequestOptions::default();
@@ -158,7 +171,17 @@ impl LoginApi {
                 opts,
             )
             .await?;
-        Ok(reply.code != 0)
+        // 仅把凭证过期码 (1000/104401/104400) 判为过期;
+        // 其他业务码 (如 2001 限流、10007 等) 不是"过期", 应透传为错误,
+        // 避免上层误判后触发更多请求.
+        match reply.code {
+            0 => Ok(false),
+            1000 | 104401 | 104400 => Ok(true),
+            other => Err(QmError::CgiApi {
+                code: other,
+                data: crate::error::redact_payload(&reply.data.to_string(), 200),
+            }),
+        }
     }
 
     /// 尝试刷新登录凭证.
@@ -216,15 +239,32 @@ impl LoginApi {
 
     /// 登出当前账号.
     pub async fn logout(&self, credential: Option<&Credential>) -> Result<()> {
+        let target = credential
+            .cloned()
+            .unwrap_or_else(|| self.base.credential());
         let mut opts = RequestOptions::default();
         opts.require_login = true;
-        opts.credential = credential.cloned();
-        self.base
+        opts.credential = Some(target.clone());
+        let reply = self
+            .base
             .cgi_reply("music.login.LoginServer", "Logout", json!({}), opts)
             .await?;
+        // transport 成功 ≠ 业务成功: Logout 有本地 side effect, 必须确认业务码.
+        if reply.code != 0 {
+            return Err(QmError::Login {
+                message: format!(
+                    "登出失败: {}",
+                    crate::error::redact_payload(&reply.data.to_string(), 200)
+                ),
+                code: reply.code,
+            });
+        }
+        // 业务成功后清除本地状态.
         if credential.is_none() {
             self.base.context.set_credential(Credential::default());
         }
+        // 使该账号的 Android session 失效 (旧鉴权状态下申请的 session 不再可用).
+        self.base.context.invalidate_session(target.musicid).await;
         Ok(())
     }
 
@@ -270,7 +310,7 @@ impl LoginApi {
             .headers(opts.headers)
             .send()
             .await
-            .map_err(|e| QmError::Network(e.to_string()))?;
+            .map_err(QmError::from)?;
         let status = resp.status().as_u16();
         if status != 200 {
             return Err(QmError::http(status, String::new()));
@@ -279,10 +319,7 @@ impl LoginApi {
         if qrsig.is_empty() {
             return Err(QmError::ApiData("获取 qrsig 失败".into()));
         }
-        let bytes = resp
-            .bytes()
-            .await
-            .map_err(|e| QmError::Network(e.to_string()))?;
+        let bytes = resp.bytes().await.map_err(QmError::from)?;
         Ok(QR {
             data: bytes.to_vec(),
             qr_type: QRLoginType::Qq,
@@ -453,7 +490,7 @@ impl LoginApi {
             &headers,
         )
         .await
-        .map_err(|e| QmError::Network(format!("MQTT 连接失败: {e}")))?;
+        .map_err(|e| QmError::network(format!("MQTT 连接失败: {e}")))?;
 
         let topic = format!("management.qrcode_login/{qrcode_id}");
         let sub_props = MqttProperties::default()
@@ -663,7 +700,7 @@ impl LoginApi {
             .map_err(|e| match e {
                 // 微信长轮询到点返回超时是正常"暂无结果"信号, 其余网络错误
                 // (DNS/连接失败等) 保持分类, 不吞成 timeout.
-                QmError::Network(msg) if msg.contains("timed out") || msg.contains("timeout") => {
+                QmError::Network(n) if n.kind == crate::error::NetworkErrorKind::Timeout => {
                     QmError::Other("timeout".into())
                 }
                 other => other,
@@ -734,7 +771,7 @@ impl LoginApi {
             .headers(opts.headers)
             .send()
             .await
-            .map_err(|e| QmError::Network(e.to_string()))?;
+            .map_err(QmError::from)?;
         let p_skey = extract_cookie(&resp, "p_skey");
         if p_skey.is_empty() {
             return Err(QmError::ApiData("获取 p_skey 失败".into()));
@@ -768,7 +805,7 @@ impl LoginApi {
             .form(&data)
             .send()
             .await
-            .map_err(|e| QmError::Network(e.to_string()))?;
+            .map_err(QmError::from)?;
         let status = resp.status().as_u16();
         let final_url = resp.url().clone();
         let code = final_url

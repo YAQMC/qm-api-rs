@@ -98,18 +98,6 @@ impl ApiModule {
         self.context.request_cgi(module, method, param, &opts).await
     }
 
-    /// 发送 HTTP 请求 (返回解析后的 JSON 值).
-    #[allow(dead_code)]
-    pub(crate) async fn http(
-        &self,
-        method: reqwest::Method,
-        url: &str,
-        opts: crate::client::HttpOptions,
-    ) -> Result<Value> {
-        let text = self.context.request_http(method, url, &opts).await?;
-        Ok(serde_json::from_str(&text).unwrap_or(Value::Null))
-    }
-
     /// 获取当前凭证.
     pub(crate) fn credential(&self) -> Credential {
         self.context.credential()

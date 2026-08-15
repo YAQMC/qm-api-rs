@@ -21,6 +21,38 @@ pub enum ErrorCategory {
     Other,
 }
 
+/// 网络错误分类 (从底层 reqwest 错误提取, 不再丢失语义).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetworkErrorKind {
+    /// 超时.
+    Timeout,
+    /// 连接失败 (拒绝/重置等).
+    Connect,
+    /// 请求构造失败.
+    Builder,
+    /// 重定向失败.
+    Redirect,
+    /// 响应体/解码失败.
+    Body,
+    /// 其他.
+    Other,
+}
+
+/// 结构化的网络错误.
+#[derive(Debug, Clone)]
+pub struct NetworkError {
+    /// 错误分类.
+    pub kind: NetworkErrorKind,
+    /// 描述信息.
+    pub message: String,
+}
+
+impl std::fmt::Display for NetworkError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
 /// 敏感键名 (JSON 键 / form·query 键, 不含 `=`).
 ///
 /// 包含登录态令牌与媒体授权数据 (purl/vkey/ekey/signed URL), 避免
@@ -105,9 +137,9 @@ pub(crate) fn redact_payload(s: &str, max: usize) -> String {
 /// QQ 音乐 API 统一错误类型.
 #[derive(Debug, thiserror::Error)]
 pub enum QmError {
-    /// 网络层错误 (连接失败、超时等).
+    /// 网络层错误 (连接失败、超时等, 结构化分类).
     #[error("network error: {0}")]
-    Network(String),
+    Network(NetworkError),
 
     /// HTTP 状态码异常.
     #[error("http error: status {status}, body: {body}")]
@@ -243,7 +275,33 @@ fn classify_cgi_code(code: i64) -> ErrorCategory {
 
 impl From<reqwest::Error> for QmError {
     fn from(e: reqwest::Error) -> Self {
-        QmError::Network(e.to_string())
+        let kind = if e.is_timeout() {
+            NetworkErrorKind::Timeout
+        } else if e.is_connect() {
+            NetworkErrorKind::Connect
+        } else if e.is_builder() {
+            NetworkErrorKind::Builder
+        } else if e.is_redirect() {
+            NetworkErrorKind::Redirect
+        } else if e.is_body() || e.is_decode() {
+            NetworkErrorKind::Body
+        } else {
+            NetworkErrorKind::Other
+        };
+        QmError::Network(NetworkError {
+            kind,
+            message: e.to_string(),
+        })
+    }
+}
+
+impl QmError {
+    /// 构造 `NetworkErrorKind::Other` 类网络错误 (供 MQTT 等自有传输使用).
+    pub(crate) fn network(message: impl Into<String>) -> Self {
+        QmError::Network(NetworkError {
+            kind: NetworkErrorKind::Other,
+            message: message.into(),
+        })
     }
 }
 
@@ -298,10 +356,7 @@ mod tests {
 
     #[test]
     fn categories_and_retryable() {
-        assert_eq!(
-            QmError::Network("x".into()).category(),
-            ErrorCategory::Network
-        );
+        assert_eq!(QmError::network("x").category(), ErrorCategory::Network);
         assert_eq!(QmError::RateLimited.category(), ErrorCategory::RateLimit);
         assert_eq!(
             QmError::CgiApi {
@@ -352,7 +407,13 @@ mod tests {
             ErrorCategory::NotFound
         );
 
-        assert!(QmError::Network("x".into()).is_retryable());
+        assert!(QmError::network("x").is_retryable());
+        assert_eq!(QmError::network("x").to_string(), "network error: x");
+        // 结构化 kind 可被调用方区分 (如登录长轮询判断 timeout).
+        match QmError::network("x") {
+            QmError::Network(n) => assert_eq!(n.kind, NetworkErrorKind::Other),
+            other => panic!("unexpected: {other:?}"),
+        }
         assert!(QmError::RateLimited.is_retryable());
         assert!(QmError::CgiApi {
             code: 104604,

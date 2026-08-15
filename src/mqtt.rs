@@ -288,7 +288,7 @@ impl MqttClient {
             let url = format!("wss://{host}:{port}{current_path}");
             let mut request = url
                 .into_client_request()
-                .map_err(|e| QmError::Network(e.to_string()))?;
+                .map_err(|e| QmError::network(e.to_string()))?;
             let hdrs = request.headers_mut();
             hdrs.insert("Sec-WebSocket-Protocol", HeaderValue::from_static("mqtt"));
             for (k, v) in headers {
@@ -301,7 +301,7 @@ impl MqttClient {
             }
             let (ws, _resp) = tokio_tungstenite::connect_async(request)
                 .await
-                .map_err(|e| QmError::Network(format!("MQTT WebSocket 握手失败: {e}")))?;
+                .map_err(|e| QmError::network(format!("MQTT WebSocket 握手失败: {e}")))?;
 
             let mut client = MqttClient {
                 ws,
@@ -326,12 +326,12 @@ impl MqttClient {
                 ConnackOutcome::Redirect(server_reference) => {
                     redirect_count += 1;
                     if redirect_count > 5 {
-                        return Err(QmError::Network("MQTT 重定向次数过多".into()));
+                        return Err(QmError::network("MQTT 重定向次数过多"));
                     }
                     current_path = build_redirect_path(&current_path, &server_reference);
                 }
                 ConnackOutcome::Rejected(code) => {
-                    return Err(QmError::Network(format!(
+                    return Err(QmError::network(format!(
                         "MQTT Connect Failed. Reason Code: {code:#x}"
                     )));
                 }
@@ -344,7 +344,7 @@ impl MqttClient {
         self.ws
             .send(Message::Binary(bytes.to_vec()))
             .await
-            .map_err(|e| QmError::Network(format!("MQTT 发送失败: {e}")))
+            .map_err(|e| QmError::network(format!("MQTT 发送失败: {e}")))
     }
 
     /// 等待并解析 CONNACK.
@@ -406,7 +406,7 @@ impl MqttClient {
                         continue;
                     }
                     if reasons.iter().any(|&r| r >= 0x80) {
-                        return Err(QmError::Network(format!("SUBACK rejected: {reasons:?}")));
+                        return Err(QmError::network(format!("SUBACK rejected: {reasons:?}")));
                     }
                     return Ok(());
                 }
@@ -425,7 +425,7 @@ impl MqttClient {
                     // PUBLISH: topic + [packet id] + properties + payload
                     let mut pos = 0;
                     let topic = read_string(&body, &mut pos)
-                        .ok_or_else(|| QmError::Network("解析 MQTT 主题失败".into()))?;
+                        .ok_or_else(|| QmError::network("解析 MQTT 主题失败"))?;
                     let qos = (kind & 0x06) >> 1;
                     if qos > 0 {
                         pos += 2; // packet id
@@ -441,9 +441,7 @@ impl MqttClient {
                     });
                 }
                 0xE0 => {
-                    return Err(QmError::Network(
-                        "MQTT 连接被服务端关闭 (DISCONNECT)".into(),
-                    ));
+                    return Err(QmError::network("MQTT 连接被服务端关闭 (DISCONNECT)"));
                 }
                 _ => continue,
             }
@@ -465,10 +463,10 @@ impl MqttClient {
                 }
                 Some(Ok(_)) => {}
                 Some(Err(e)) => {
-                    return Err(QmError::Network(format!("MQTT 读取失败: {e}")));
+                    return Err(QmError::network(format!("MQTT 读取失败: {e}")));
                 }
                 None => {
-                    return Err(QmError::Network("MQTT 连接已关闭".into()));
+                    return Err(QmError::network("MQTT 连接已关闭"));
                 }
             }
         }

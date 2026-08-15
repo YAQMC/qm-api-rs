@@ -246,10 +246,12 @@ impl CredentialStore {
             store.accounts.insert(musicid, refreshed.clone());
         }
         self.persist()?;
+        // 凭证已刷新: 使该账号的 Android session 失效 (旧鉴权下申请的 session 保守作废).
+        client.context().invalidate_session(musicid).await;
         Ok(refreshed)
     }
 
-    /// 确保当前凭证有效: 过期时自动刷新.
+    /// 确保当前凭证有效: 过期时自动刷新, 并将生效凭证同步回 `client`.
     ///
     /// 返回当前有效凭证; 无账号或刷新失败时返回错误.
     pub async fn ensure_current(&self, client: &Client) -> Result<Credential> {
@@ -259,12 +261,16 @@ impl CredentialStore {
             .unwrap()
             .current
             .ok_or_else(|| QmError::CredentialInvalid("凭证库为空, 请先 add 账号".into()))?;
-        if self.is_expired(musicid) {
-            self.refresh(client, musicid).await
+        let effective = if self.is_expired(musicid) {
+            self.refresh(client, musicid).await?
         } else {
             self.get(musicid)
-                .ok_or_else(|| QmError::CredentialInvalid(format!("账号 {musicid} 不存在")))
-        }
+                .ok_or_else(|| QmError::CredentialInvalid(format!("账号 {musicid} 不存在")))?
+        };
+        // 保证 Client 与 Store 同步: 刷新后立即把新凭证写回 Client,
+        // 避免后续未显式传 credential 的 API 继续使用旧 token.
+        client.set_credential(effective.clone());
+        Ok(effective)
     }
 
     /// 将当前账号应用到客户端.
@@ -375,6 +381,54 @@ mod tests {
         // 从后端数据恢复.
         let loaded = CredentialStore::from_backend(backend).unwrap();
         assert_eq!(loaded.get(7).map(|c| c.musickey), Some("secret".into()));
+    }
+
+    #[test]
+    fn account_ids_are_stable_sorted() {
+        let store = CredentialStore::new();
+        store
+            .add(Credential {
+                musicid: 300,
+                str_musicid: "300".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        store
+            .add(Credential {
+                musicid: 1,
+                str_musicid: "1".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        store
+            .add(Credential {
+                musicid: 200,
+                str_musicid: "200".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        // 底层为 BTreeMap, 迭代顺序确定 (升序), 不依赖插入顺序.
+        assert_eq!(store.account_ids(), vec![1, 200, 300]);
+    }
+
+    #[tokio::test]
+    async fn ensure_current_syncs_client() {
+        let store = CredentialStore::new();
+        let cred = Credential {
+            musicid: 9,
+            str_musicid: "9".into(),
+            musickey: "k9".into(),
+            login_type: 2,
+            ..Default::default()
+        };
+        store.add(cred).unwrap();
+
+        let client = crate::Client::new(None, None).unwrap();
+        // 未过期路径: ensure_current 也把生效凭证写回 Client.
+        let effective = store.ensure_current(&client).await.unwrap();
+        assert_eq!(effective.musicid, 9);
+        assert_eq!(client.credential().musicid, 9);
+        assert_eq!(client.credential().musickey, "k9");
     }
 
     /// 内存后端 (测试用).

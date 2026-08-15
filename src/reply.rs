@@ -116,6 +116,8 @@ pub struct BatchReport {
 
 impl BatchReport {
     /// 是否全部成功.
+    ///
+    /// 空批次 (`total == 0`) **不算**成功, 避免调用方把"无请求"误判为"全部成功".
     pub fn is_ok(&self) -> bool {
         self.total > 0 && self.failures.is_empty()
     }

@@ -265,7 +265,7 @@ async fn put_object(
         .body(bytes)
         .send()
         .await
-        .map_err(|e| QmError::Network(e.to_string()))?;
+        .map_err(QmError::from)?;
     let status = resp.status().as_u16();
     if status != 200 {
         let body = resp.text().await.unwrap_or_default();
