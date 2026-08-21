@@ -17,12 +17,17 @@ pub struct QuerySongResponse {
 /// 单个文件授权结果.
 #[derive(Clone, Deserialize, Default)]
 pub struct UrlinfoItem {
-    #[serde(rename = "songmid")]
+    #[serde(rename = "songmid", default)]
     pub mid: String,
+    #[serde(default)]
     pub filename: String,
+    #[serde(default)]
     pub purl: String,
+    #[serde(default)]
     pub vkey: String,
+    #[serde(default)]
     pub ekey: String,
+    #[serde(default)]
     pub result: i64,
 }
 
@@ -306,4 +311,25 @@ pub struct GetCdnDispatchResponse {
     pub refresh_time: i64,
     #[serde(alias = "cacheTime")]
     pub cache_time: i64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn clear_vkey_item_without_vkey_or_ekey_deserializes() {
+        let item: UrlinfoItem = serde_json::from_value(json!({
+            "songmid": "001abc",
+            "filename": "M500001abc.mp3",
+            "purl": "https://example.invalid/M500001abc.mp3",
+            "result": 0,
+        }))
+        .expect("clear vkey item parses without vkey/ekey fields");
+        assert_eq!(item.mid, "001abc");
+        assert!(item.vkey.is_empty());
+        assert!(item.ekey.is_empty());
+        assert_eq!(item.result, 0);
+    }
 }
