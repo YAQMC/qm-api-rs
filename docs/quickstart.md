@@ -4,7 +4,7 @@
 
 ```toml
 [dependencies]
-qqmusic-api = { git = "https://github.com/you/qqmusic-api-rs" }
+qqmusic-api = { git = "https://github.com/YAQMC/qm-api-rs" }
 tokio = { version = "1", features = ["full"] }
 ```
 

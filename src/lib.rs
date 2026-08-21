@@ -2,7 +2,7 @@
 //!
 //! 纯 Rust 实现的 QQ 音乐异步 API 客户端, 移植自
 //! [L-1124/QQMusicApi](https://github.com/L-1124/QQMusicApi) (Python),
-//! 并参考官方桌面客户端 (Electron ASAR) 补充了签名接口、平台参数等细节.
+//! 并自主实现了桌面客户端互操作所需的签名接口、平台参数等细节.
 
 // 模块内普遍使用 `let mut opts = RequestOptions::default(); opts.x = ...;` 的
 // builder 式初始化 (字段数量多且逐个配置), 属有意的可读性选择.

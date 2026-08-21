@@ -50,9 +50,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("已保存账号数: {}", store.account_ids().len());
 
     // 5. QMC 加密音质解密
-    //    先获取加密音质链接, 下载 .mflac/.mgg 文件后:
-    //    let (audio, ext) = qqmusic_api::qmc::decrypt_file(Path::new("song.mflac"), None)?;
-    //    若文件未内嵌密钥, 用 get_song_urls 返回的 ekey: decrypt_file(path, Some(&ekey))
+    //    获取加密音质链接和 ekey, 下载 .mflac/.mgg 文件后:
+    //    let (audio, ext) = qqmusic_api::qmc::decrypt_file(path, Some(&ekey))?;
     println!("QMC 解密: qqmusic_api::qmc::decrypt_file(path, ekey)");
 
     Ok(())

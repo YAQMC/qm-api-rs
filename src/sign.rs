@@ -1,4 +1,4 @@
-//! 签名算法 (对应 Python 端 `algorithms/sign.py`).
+//! QQ 音乐请求签名算法.
 //!
 //! 官方桌面客户端 (`musics.fcg`) 需要将 payload 进行签名后才可访问,
 //! 客户端使用 `__TENCENT_CHAOS_VM` 混淆虚拟机生成 `sign`; 该 VM 的输入
@@ -54,7 +54,7 @@ mod tests {
 
     #[test]
     fn test_zzc_sign_known() {
-        // 由 Python 参考实现生成的已知值.
+        // 固定测试向量.
         let payload = br#"{"comm":{"ct":19,"cv":1,"tmeAppID":"qqmusic"}}"#;
         let sign = zzc_sign(payload);
         assert!(

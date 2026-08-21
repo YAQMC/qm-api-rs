@@ -16,7 +16,7 @@
 
 - 上游 Python 库: <https://github.com/L-1124/QQMusicApi>
 - 上游文档: <https://l-1124.github.io/QQMusicApi/>
-- 官方客户端 (Electron ASAR): `qqmusic_1.1.8-1.asar`
+- QQ 音乐桌面客户端互操作行为
 
 ## 生成 rustdoc
 

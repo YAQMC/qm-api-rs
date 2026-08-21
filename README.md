@@ -3,8 +3,7 @@
 > 纯 Rust 实现的 QQ 音乐异步 API 客户端。
 
 移植自 [L-1124/QQMusicApi](https://github.com/L-1124/QQMusicApi) (Python)，
-并参考官方桌面客户端 `qqmusic_1.1.8-1.asar` 解包后的源码，补充了
-签名接口（`musics.fcg`）、平台参数（`ct`/`cv`/`comm`）、登录流程等细节。
+并自主实现部分桌面客户端互操作所需的 `raw_*` 请求。
 
 > [!NOTE]
 > **音乐平台不易，请尊重版权，支持正版。**
@@ -17,7 +16,7 @@
 - 🔐 内置签名算法（`zzc_sign`）与 QRC 歌词 3DES 解密
 - 📱 支持 Android / Desktop / Web 三种平台请求
 - 🔁 连续翻页（`Pager`）、批量 CGI 请求（`request_cgi_batch`）、内置限流
-- 🔓 内置 **QMC 加密音质解密**（QMCv1/QMCv2 Map/RC4 + EKey TEA）
+- 🔓 内置 **QMCv2 加密音质解密**（QMCDecode Map/RC4 + EKey TEA）
 - 📝 **LRC/QRC 歌词解析器**（`lyric_parser`）
 - 👥 **多账号凭证管理**（`CredentialStore` 持久化 + 自动刷新）
 - 🌐 **代理支持**（`Client::new_with_proxy`）
@@ -29,7 +28,7 @@
 
 ```toml
 [dependencies]
-qqmusic-api = { git = "https://github.com/you/qqmusic-api-rs" }
+qqmusic-api = { git = "https://github.com/YAQMC/qm-api-rs" }
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -95,7 +94,7 @@ cargo run --example demo
 
 - **Python 参考库 (L-1124/QQMusicApi)**：全部 14 个模块的业务方法均已移植，含
   `helper_utils.UploadFileSession` 与 `login_utils.PhoneLoginSession / QRCodeLoginSession`。
-- **官方桌面客户端 (Electron ASAR)**：补充了桌面端专用接口，包括
+- **桌面客户端互操作**：自主实现了桌面端专用接口，包括
   `IsSongFanByMid / GetFavSonglist / GetUrl / GetUniformSongDetailInfo /
   GetSongDetailInfoListByDirId / IsPlaylistFan / SeqSonglist / do_favor /
   GetReplyCommentList / UpdateHotComment / SRFVipQuery_V2 / get_user_baseinfo_v2 /
@@ -110,7 +109,7 @@ cargo run --example demo
   + `user.is_vip`，配合你账号已购的 VIP 权益）。
 
 > 影响排序补充进度：
-> ① 加密音质解密 ✅（QMCv1/v2，含参考实现测试向量 + EKey TEA 往返）
+> ① 加密音质解密 ✅（QMCv2 Map/分段 RC4，含 EKey V1/EncV2 往返）
 > ③ 凭证自动刷新与多账号 ✅（`CredentialStore`，可插拔安全后端，Debug 已 redaction）
 > ④ 歌词结构化解析 ✅（`lyric_parser`：LRC + QRC 逐字）
 > ⑤ 桌面端完整签名 ✅（`zzc_sign` 与参考逐字节一致，无需 chaos VM）
@@ -129,6 +128,8 @@ cargo clippy --all-targets --all-features -- -D warnings
 ```## 许可证
 
 本项目采用 **[GNU General Public License v3.0 or later](./LICENSE)**。
+
+QMC 解密实现所适用的 MIT 许可见 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)。
 
 本项目仅用于对技术可行性的探索及研究，请勿将其用于任何商业用途或侵犯版权的行为。
 

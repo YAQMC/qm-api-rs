@@ -513,7 +513,7 @@ impl UserApi {
     }
 
     // ------------------------------------------------------------------
-    // 以下接口补充自官方桌面客户端 (Electron ASAR) `common.js`.
+    // 以下为桌面客户端协议互操作接口.
     // ------------------------------------------------------------------
 
     /// ⚠️ **Raw 透传** — 查询 VIP 会员信息
@@ -595,7 +595,7 @@ impl UserApi {
     ///
     /// - `action`: `MvFavAction::Fav`(0) / `Unfav`(1) (cmdtype 语义未验证)
     ///
-    /// **请求 payload 为猜测**: ASAR 证据显示该接口实际携带 `cmdtype` 字段,
+    /// **请求 payload 为猜测**: 桌面端请求实际携带 `cmdtype` 字段,
     /// 与当前实现 (`vid`/`opType`) 可能不符; 默认不编译, 需显式启用
     /// `--features experimental`.
     #[cfg(feature = "experimental")]

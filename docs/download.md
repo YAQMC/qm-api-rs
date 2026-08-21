@@ -85,24 +85,22 @@ let has = client.song.has_sheet(&song.mid).await?;
 use qqmusic_api::qmc;
 use std::path::Path;
 
-// 方式一: 文件内嵌密钥 (Android QTag / PC V1), 直接解密
-let (audio, ext) = qmc::decrypt_file(Path::new("song.mflac"), None)?;
+// 使用 get_song_urls / MediaSource 返回的 ekey
+let (audio, ext) = qmc::decrypt_file(Path::new("song.mflac"), Some(&ekey))?;
 println!("输出格式: {}", ext);  // flac / ogg / mp4 ...
 
-// 方式二: 文件未内嵌密钥, 用 get_song_urls 返回的 ekey
-let (audio, ext) = qmc::decrypt_file(Path::new("song.mflac"), Some(&ekey))?;
-
 // 写入磁盘
-let out = qmc::decrypt_file_to(Path::new("song.mflac"), Path::new("./out"), None)?;
+let out = qmc::decrypt_file_to(Path::new("song.mflac"), Path::new("./out"), Some(&ekey))?;
 ```
 
-支持的算法 (移植自 unlock-music 官方 Rust 实现):
+支持的算法：
 
-- **QMCv1** 静态密钥 (`.tkm` / `.bkc*` / 十六进制扩展名等旧格式)
-- **QMCv2** Map (短密钥 ≤300 字节) / RC4 (长密钥 >300 字节), 覆盖
+- **QMCv2** QMCDecode Map (短密钥 ≤300 字节) / 分段 RC4 (长密钥 >300 字节), 覆盖
   `.mflac` / `.mgg` / `.mgg0` / `.mflac0` / `.mmp4` / `.qmcflac` / `.qmcogg` 等
-- **EKey** 解密: V1 (simple key + header) 与 V2 (双层 TEA)
-- **Footer** 解析: QTag / STag / PcV1Legacy / MusicEx
+- **EKey** 解密: V1 (simple key + header) 与 EncV2 (双层 TEA)
+
+`qmc` 不解析旧式文件 footer，也不提供 QMCv1 静态密钥；调用方必须传入 API 返回的
+`ekey`，输入数据应只包含加密媒体字节。
 
 > 注意: 仅用于解密你自己合法下载、有权使用的音频文件.
 

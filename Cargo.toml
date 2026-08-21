@@ -3,8 +3,12 @@ name = "qqmusic-api"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.88.0"
-description = "A pure-Rust async client for QQ Music APIs, ported from the L-1124/QQMusicApi Python library and supplemented with the official desktop client."
+description = "A pure-Rust async client for QQ Music APIs, ported from the L-1124/QQMusicApi Python library with independently implemented desktop interoperability."
 license = "GPL-3.0-or-later"
+repository = "https://github.com/YAQMC/qm-api-rs"
+homepage = "https://github.com/YAQMC/qm-api-rs"
+documentation = "https://docs.rs/qqmusic-api"
+readme = "README.md"
 keywords = ["qqmusic", "music", "api", "tencent"]
 categories = ["web-programming::http-client"]
 
@@ -13,9 +17,9 @@ name = "qqmusic_api"
 path = "src/lib.rs"
 
 [features]
-# 未经过 live write 验证的写接口 (逆向自官方客户端 ASAR, 语义可能不准确).
+# 未经过 live write 验证的桌面互操作写接口 (语义可能不准确).
 # 默认关闭: 需要显式启用 `--features experimental` 才能调用,
-# 避免把"源码中发现 endpoint"误认为"当前协议已验证".
+# 避免把"协议观察到 endpoint"误认为"当前协议已验证".
 experimental = []
 
 [dependencies]
@@ -41,6 +45,7 @@ cipher = "0.4"
 flate2 = "1"
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 futures-util = "0.3"
+zeroize = "1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }

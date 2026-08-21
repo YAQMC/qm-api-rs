@@ -3,7 +3,7 @@
 > 所有方法均为 `async fn`，返回 `Result<T, QmError>`。
 > 需要登录的接口在未登录时会返回 `QmError::CredentialInvalid`。
 >
-> **Raw 透传**：以 `raw_` 前缀命名的方法（逆向自官方桌面客户端 ASAR）直接
+> **Raw 透传**：以 `raw_` 前缀命名的方法用于桌面客户端协议互操作，直接
 > 透传未验证的 `serde_json::Value` 参数与响应，仅作为底层能力；稳定业务代码
 > 应优先使用类型化方法，自行封装 DTO。
 
@@ -117,7 +117,7 @@ store.ensure_current(&client).await?;   // 过期时自动 refresh_credential
 
 ### QMC 加密音质解密
 
-`qqmusic_api::qmc` 提供 QMCv1/QMCv2 解密与 EKey 还原，详见 [下载歌曲](./download.md)。
+`qqmusic_api::qmc` 提供 QMCDecode QMCv2 Map/分段 RC4 解密与 EKey 还原，详见 [下载歌曲](./download.md)。
 
 ### 歌词解析（LRC / QRC）
 
@@ -198,7 +198,7 @@ song.has_sheet(mid) -> HasSheetMusicResponse
 // 收藏数
 song.get_fav_num(&[songid]) -> GetFavNumResponse
 
-// 补充自官方桌面端 (Electron ASAR) — Raw 透传 (schema 未 live 验证)
+// 桌面客户端互操作 — Raw 透传 (schema 未 live 验证)
 song.raw_is_song_fan_by_mid(param, credential) -> Value   // 检查是否已收藏 (需要登录)
 song.raw_get_fav_songlist(param, credential) -> Value      // 收藏歌曲列表 (需要登录)
 song.raw_get_url_vkey(param) -> Value                      // 桌面端下载链接 (GetUrl)
@@ -256,7 +256,7 @@ album.get_new_album(area, num, page) -> GetNewAlbumResponse
 ```
 
 > ⚠️ `album.fav_album` / `album.del_fav_album` 属于 **Experimental** 写接口
-> （`AlbumFavWrite / FavAlbum / CancelFavAlbum`，逆向自 ASAR，语义未 live 验证），
+> （`AlbumFavWrite / FavAlbum / CancelFavAlbum`，语义未 live 验证），
 > 默认不编译，需启用 `--features experimental`。详见 [experimental](./experimental.md)。
 
 ## lyric（歌词）
@@ -299,7 +299,7 @@ songlist.del_songs(dirid, &[(song_id, song_type)], tid, credential) -> bool
 songlist.like_song(&[(song_id, song_type)], credential) -> bool   // 添加到"我喜欢"(dirid=201)
 songlist.unlike_song(&[(song_id, song_type)], credential) -> bool
 
-// 补充自官方桌面端 (Electron ASAR) — Raw 透传 (schema 未 live 验证)
+// 桌面客户端互操作 — Raw 透传 (schema 未 live 验证)
 songlist.raw_get_uniform_song_detail(param, credential) -> Value       // 歌单歌曲详情 (dirId=201 为"我喜欢")
 songlist.raw_get_song_detail_info_list_by_dirid(param, credential) -> Value
 songlist.raw_is_playlist_fan(param, credential) -> Value               // 检查歌单是否已收藏 (需要登录)
@@ -318,7 +318,7 @@ comment.get_moment_comments(biz_id, page_size, last_pos, CommentBizType, sub_typ
 comment.add_comment(biz_id, content, reply_cmt_id, CommentBizType, sub_type, credential) -> AddCommentResponse
 comment.delete_comment(cm_id, credential) -> bool
 
-// 补充自官方桌面端 (Electron ASAR) — Raw 透传 (schema 未 live 验证)
+// 桌面客户端互操作 — Raw 透传 (schema 未 live 验证)
 comment.raw_get_reply_comments(param, credential) -> Value   // 回复列表
 comment.raw_update_hot_comment(param, credential) -> Value   // 更新热评状态 (需要登录)
 ```
@@ -358,7 +358,7 @@ user.add_dislike(DislikeIdType::Songs /* 或 Singers / Styles */, &[values], cre
 user.cancel_dislike(DislikeIdType, &[values], credential) -> bool
 user.cancel_all_dislike_song(credential) -> bool
 
-// 补充自官方桌面端 (Electron ASAR) — Raw 透传 (schema 未 live 验证)
+// 桌面客户端互操作 — Raw 透传 (schema 未 live 验证)
 user.raw_get_user_vip_info(param, credential) -> Value   // 桌面端 VIP 查询 (SRFVipQuery_V2)
 user.raw_get_user_base_info(param, credential) -> Value  // 用户基础信息 (get_user_baseinfo_v2)
 user.raw_get_favor_list(param, credential) -> Value      // 收藏的电台列表

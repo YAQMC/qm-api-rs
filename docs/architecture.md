@@ -122,7 +122,7 @@ sign  = lower("zzc" + part1 + b64 + part2)
 
 > 官方桌面客户端在 `musics.fcg` 上使用 `__TENCENT_CHAOS_VM` 混淆虚拟机生成
 > 签名。该 VM 输出的 `sign` 与 `zzc_sign` 通过相同的服务端校验，
-> 本实现使用与 Python 参考库一致的简化 SHA1 方案即可通过校验。
+> 本实现使用项目自有的简化 SHA1 方案即可通过校验。
 
 ## QIMEI（Android 指纹）
 
