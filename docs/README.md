@@ -14,7 +14,7 @@
 
 ## 参考
 
-- 上游 Python 库: <https://github.com/L-1124/QQMusicApi>
+- 上游 Python 库（仅协议行为参考）: <https://github.com/L-1124/QQMusicApi>
 - 上游文档: <https://l-1124.github.io/QQMusicApi/>
 - QQ 音乐桌面客户端互操作行为
 

@@ -1,6 +1,7 @@
 //! # qqmusic-api
 //!
-//! 纯 Rust 实现的 QQ 音乐异步 API 客户端, 移植自
+//! 纯 Rust 实现的 QQ 音乐异步 API 客户端, 独立编写, 未直接使用上游源码文件;
+//! 接口形状与协议行为参考
 //! [L-1124/QQMusicApi](https://github.com/L-1124/QQMusicApi) (Python),
 //! 并自主实现了桌面客户端互操作所需的签名接口、平台参数等细节.
 

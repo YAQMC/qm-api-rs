@@ -2,7 +2,8 @@
 //!
 //! 该模块包含了一个与标准 Triple-DES 密钥扩展略有不同的自定义加密/解密实现,
 //! 用于兼容 QQ 音乐 QRC 歌词解密中所使用的特定 3DES 变体。
-//! 移植自 <https://github.com/L-1124/QQMusicApi> 的 `algorithms/tripledes.py`.
+//! 独立实现，按协议行为编写，未直接使用
+//! <https://github.com/L-1124/QQMusicApi> 的 `algorithms/tripledes.py` 源码.
 
 pub const ENCRYPT: i32 = 1;
 pub const DECRYPT: i32 = 0;

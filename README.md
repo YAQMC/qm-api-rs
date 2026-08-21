@@ -2,8 +2,9 @@
 
 > 纯 Rust 实现的 QQ 音乐异步 API 客户端。
 
-移植自 [L-1124/QQMusicApi](https://github.com/L-1124/QQMusicApi) (Python)，
-并自主实现部分桌面客户端互操作所需的 `raw_*` 请求。
+独立实现的 Rust 版本，未直接使用任何上游源码文件；接口形状与协议行为参考
+[L-1124/QQMusicApi](https://github.com/L-1124/QQMusicApi) (Python)，并自主实现
+桌面客户端互操作所需的 `raw_*` 请求。见 [PROVENANCE.md](./PROVENANCE.md)。
 
 > [!NOTE]
 > **音乐平台不易，请尊重版权，支持正版。**
@@ -92,7 +93,8 @@ cargo run --example demo
 
 接口覆盖情况对照参考来源：
 
-- **Python 参考库 (L-1124/QQMusicApi)**：全部 14 个模块的业务方法均已移植，含
+- **Python 参考库 (L-1124/QQMusicApi)**：全部 14 个模块的业务方法均已对照实现
+  （仅参考接口形状，未复制上游源码），含
   `helper_utils.UploadFileSession` 与 `login_utils.PhoneLoginSession / QRCodeLoginSession`。
 - **桌面客户端互操作**：自主实现了桌面端专用接口，包括
   `IsSongFanByMid / GetFavSonglist / GetUrl / GetUniformSongDetailInfo /
