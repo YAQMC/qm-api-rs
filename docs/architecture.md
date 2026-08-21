@@ -7,11 +7,11 @@
 ```
 Client
  ├─ ApiContext (Arc)
- │   ├─ reqwest::Client        底层 HTTP 客户端
- │   ├─ platform               默认平台
- │   ├─ version_policy         各平台版本档案 (ct/cv/UA)
- │   ├─ cgi_base_url           CGI 基础地址 (可指向 mock 服务器)
- │   ├─ credential (Mutex)     登录凭证
+    │   ├─ ApiTransport          可注入 HTTP 传输 (默认 ReqwestApiTransport)
+    │   ├─ platform               默认平台
+    │   ├─ version_policy         各平台版本档案 (ct/cv/UA)
+    │   ├─ cgi_base_url           CGI 基础地址 (可指向 mock 服务器)
+    │   ├─ credential (Mutex)     登录凭证
 │   ├─ device (Mutex)         模拟 Android 设备 (设备身份, QIMEI 唯一状态源)
 │   ├─ sessions (tokio)       按账号缓存的 Android session (账号运行态)
 │   ├─ state_lock (tokio)     session/QIMEI 申请的 singleflight 锁
@@ -30,6 +30,36 @@ Client
   QIMEI / GetSession 等异步请求绑定**开始时**的 epoch；响应返回后若 epoch
   已变，丢弃 stale 结果，绝不把 D0 的 QIMEI/Session 写进 D1。
 - `state_lock` 保证多个并发 stale 请求只触发一次 session / QIMEI 申请。
+
+## HTTP 传输 (`ApiTransport`)
+
+所有 CGI / QIMEI / `request_http` / `request_http_bytes` 都走 `ApiContext` 持有的
+`Arc<dyn ApiTransport>`，不再把 `reqwest::Client` 暴露为公开发送路径。
+
+- **默认实现** `ReqwestApiTransport`：reqwest **0.12**，`gzip` / `brotli` /
+  `cookie_store(true)`（登录 cookie 依赖它）。reqwest 类型只留在私有模块。
+- **注入**：`Client::new` / `ApiContext::new` 使用默认实现；
+  `new_with_transport(Arc<dyn ApiTransport>)` 注入自定义传输；
+  `new_with_transport_config(TransportConfig)` 只改超时/代理/重试而不换实现。
+- **Timeout**：默认 connect **5s**、总超时 **15s**（`TransportConfig` 可改）。
+  单次请求可用 `HttpOptions.timeout` 覆盖总超时（微信二维码长轮询 35s）。
+- **Allowlist**：发送前检查 host。生产 HTTPS 至少覆盖
+  `u.y.qq.com` / `c.y.qq.com` / `c6.y.qq.com` / `api.tencentmusic.com` /
+  `ssl.ptlogin2.qq.com` / `ssl.ptlogin2.graph.qq.com` / `xui.ptlogin2.qq.com` /
+  `graph.qq.com` / `y.qq.com` / `open.weixin.qq.com` / `lp.open.weixin.qq.com`，
+  以及媒体 CDN / COS 后缀。`cgi_base_url` / `qimei_url` 指向 mock 时自动放行
+  该 origin。拒绝返回 `QmError::Protocol { stage: "allowlist", .. }`，不 panic。
+- **Redirect**：默认 `FollowValidated`，校验 allowlist 后最多 **3** 跳；
+  二维码 / cookie 交换使用 `RedirectMode::None`（返回 30x，不跟随）。
+- **Cancellation**：每个请求携带 `tokio-util::sync::CancellationToken`
+  （crate 再导出为 `qqmusic_api::CancellationToken`）。默认 transport 在
+  send / 读 body / 重试等待时 `select!` 该令牌；取消为
+  `NetworkErrorKind::Cancelled`（不可重试）。
+- **Retry**：`RetryClass::SafeRead` 对网络抖动 / HTTP 429 / 5xx 额外重试 1 次
+  （间隔 250ms）；`Write` / `AuthPoll` 默认不重试。登录写与歌单/评论等状态
+  改变已标为 `Write`。
+
+MQTT 登录推送（`mqtt.rs`）仍走独立 WebSocket，不进入 `ApiTransport`。
 
 ## CGI 请求流程
 
@@ -139,7 +169,9 @@ QoS 1/2 会正确跳过 packet id；`parse_properties` 对未知属性按 MQTT 5
   `req_N` / 空 data。
 - `ApiContext::cgi_base_url` 可指向本地 mock 服务器（`context.rs` 测试内的
   axum 服务），端到端验证 `request_cgi` / `request_cgi_batch` 的 envelope 契约
-  与部分失败。
+  与部分失败。mock origin 由 transport allowlist 自动放行。
+- `ApiTransport` 单测覆盖未知 host 拒绝、timeout、redirect 0/3 跳、取消、
+  写请求不重试。
 - 模型 schema drift 测试验证字段缺失/改名时按 `#[serde(default)]` 兜底。
 - QIMEI / session 的 Device 缓存命中与并发读一致性有专门测试。
 - `mqtt.rs` 含 MQTT 5 报文构造/解析与 QoS 1/2 偏移的位级单测。

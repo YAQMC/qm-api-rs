@@ -176,9 +176,8 @@ impl UploadFileSession {
             }
 
             if target.upload_status != 1 {
-                self.api.base.context.limiter.acquire().await;
                 put_object(
-                    &self.api.base.context.http,
+                    &self.api.base.context,
                     &file_paths[i],
                     region,
                     &auth.secret_id,
@@ -222,10 +221,10 @@ fn now_secs() -> i64 {
 /// 使用 COS 临时密钥执行 PUT Object 上传.
 ///
 /// 签名采用 QCloud 旧版 `q-sign-algorithm=sha1` 方案 (与官方桌面客户端一致).
-/// `http` 复用客户端的统一 HTTP 客户端 (共享代理/限流配置).
+/// 经 `ApiContext` 的 transport 发送 (共享代理/限流/allowlist).
 #[allow(clippy::too_many_arguments)]
 async fn put_object(
-    http: &reqwest::Client,
+    context: &crate::context::ApiContext,
     file_path: &Path,
     region: &str,
     secret_id: &str,
@@ -256,20 +255,21 @@ async fn put_object(
 
     let bytes = std::fs::read(file_path)
         .map_err(|e| QmError::Io(format!("读取文件失败 {file_path:?}: {e}")))?;
-    let resp = http
-        .put(&url)
-        .header("Host", &host)
-        .header("x-cos-security-token", token)
-        .header("Authorization", authorization)
-        .header("Content-Type", "application/octet-stream")
-        .body(bytes)
-        .send()
-        .await
-        .map_err(QmError::from)?;
-    let status = resp.status().as_u16();
-    if status != 200 {
-        let body = resp.text().await.unwrap_or_default();
-        return Err(QmError::http(status, body));
+    let mut opts = crate::client::HttpOptions::default();
+    opts.headers = vec![
+        ("Host".into(), host),
+        ("x-cos-security-token".into(), token.to_string()),
+        ("Authorization".into(), authorization),
+        ("Content-Type".into(), "application/octet-stream".into()),
+    ];
+    opts.body = Some(bytes);
+    opts.retry = crate::RetryClass::Write;
+    opts.redirects = crate::RedirectMode::None;
+    let resp = context
+        .request_http_raw(crate::HttpMethod::Put, &url, &opts)
+        .await?;
+    if resp.status != 200 {
+        return Err(QmError::http(resp.status, resp.text()));
     }
     Ok(())
 }

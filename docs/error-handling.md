@@ -6,7 +6,7 @@
 
 | 变体 | 说明 |
 | --- | --- |
-| `QmError::Network(String)` | 网络层错误（连接失败、超时、TLS 等） |
+| `QmError::Network(NetworkError)` | 网络层错误（连接失败、超时、TLS、取消等），含 `kind` |
 | `QmError::Http { status, body }` | HTTP 状态码非 200 |
 | `QmError::GlobalApi { code, data }` | CGI 外层信封错误（`code != 0`） |
 | `QmError::CgiApi { code, data }` | CGI 子请求错误 |
@@ -17,6 +17,7 @@
 | `QmError::Login { message, code }` | 登录业务错误 |
 | `QmError::CredentialRefresh(String)` | 凭证刷新失败 |
 | `QmError::Deserialize(String)` | 响应 JSON 反序列化失败 |
+| `QmError::Protocol { stage, message }` | 协议/结构错误（含 allowlist 拒绝） |
 | `QmError::ApiData(String)` | 响应内容缺失 / 无法解析 |
 | `QmError::JsonPath(String)` | JSONPath 提取失败 |
 | `QmError::ValueError(String)` | 参数校验失败 |
@@ -25,8 +26,8 @@
 
 `QmError::category() -> ErrorCategory` 提供粗分类（`Network / Auth / Permission /
 BadRequest / RateLimit / NotFound / Server / Other`），供展示与重试策略参考；
-`QmError::is_retryable() -> bool` 对网络抖动、限流（`2001`/`104604`）、
-服务端 5xx 返回 `true`。
+`QmError::is_retryable() -> bool` 对网络抖动（超时/连接/body）、限流（`2001`/`104604`）、
+服务端 5xx 返回 `true`。取消（`NetworkErrorKind::Cancelled`）与请求构造失败不可重试。
 
 ```rust
 if e.is_retryable() {

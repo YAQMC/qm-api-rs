@@ -3,16 +3,20 @@
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::context::ApiContext;
 use crate::error::{QmError, Result};
 use crate::modules::*;
 use crate::reply::CgiReply;
+use crate::transport::{
+    ApiTransport, CancellationToken, HttpMethod, RedirectMode, RetryClass, TransportConfig,
+};
 use crate::versioning::Platform;
 use crate::Credential;
 
 /// CGI 请求选项.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct CgiOptions {
     /// 自定义公共参数 (与默认 comm 合并).
     pub comm: Option<Value>,
@@ -28,12 +32,32 @@ pub struct CgiOptions {
     pub sign: bool,
     /// 是否需要登录.
     pub require_login: bool,
+    /// 传输层重试类别. 写操作应设为 [`RetryClass::Write`].
+    pub retry: RetryClass,
+    /// 请求取消令牌. 见 `transport` 模块文档.
+    pub cancellation: CancellationToken,
 }
 
 impl CgiOptions {
     /// 构造默认选项.
     pub fn new() -> Self {
         CgiOptions::default()
+    }
+}
+
+impl Default for CgiOptions {
+    fn default() -> Self {
+        Self {
+            comm: None,
+            override_comm: false,
+            preserve_bool: false,
+            credential: None,
+            platform: None,
+            sign: false,
+            require_login: false,
+            retry: RetryClass::SafeRead,
+            cancellation: CancellationToken::new(),
+        }
     }
 }
 
@@ -47,20 +71,47 @@ impl From<&CgiOptions> for crate::context::RequestOptions {
             platform: o.platform,
             sign: o.sign,
             require_login: o.require_login,
+            retry: o.retry,
+            cancellation: o.cancellation.clone(),
         }
     }
 }
 
 /// HTTP 请求选项.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct HttpOptions {
     pub params: Vec<(String, String)>,
-    pub headers: reqwest::header::HeaderMap,
+    /// 普通 header 列表, 不含 `reqwest::header::HeaderMap`.
+    pub headers: Vec<(String, String)>,
     pub cookies: Vec<(String, String)>,
     pub json: Option<Value>,
     pub data: Option<Value>,
+    /// 原始字节体 (JSON / form 优先).
+    pub body: Option<Vec<u8>>,
     pub credential: Option<Credential>,
-    pub timeout: Option<std::time::Duration>,
+    /// 覆盖默认总超时 (connect 超时仍由 transport 配置决定).
+    pub timeout: Option<Duration>,
+    pub retry: RetryClass,
+    pub redirects: RedirectMode,
+    pub cancellation: CancellationToken,
+}
+
+impl Default for HttpOptions {
+    fn default() -> Self {
+        Self {
+            params: Vec::new(),
+            headers: Vec::new(),
+            cookies: Vec::new(),
+            json: None,
+            data: None,
+            body: None,
+            credential: None,
+            timeout: None,
+            retry: RetryClass::SafeRead,
+            redirects: RedirectMode::FollowValidated,
+            cancellation: CancellationToken::new(),
+        }
+    }
 }
 
 /// QQMusic API 客户端.
@@ -103,8 +154,35 @@ impl Client {
         platform: Option<Platform>,
         proxy: Option<&str>,
     ) -> Result<Self> {
-        let context = Arc::new(ApiContext::new_with_proxy(credential, platform, proxy)?);
-        Ok(Client {
+        Ok(Self::from_context(Arc::new(ApiContext::new_with_proxy(
+            credential, platform, proxy,
+        )?)))
+    }
+
+    /// 使用指定的默认 transport 配置创建客户端.
+    pub fn new_with_transport_config(
+        credential: Option<Credential>,
+        platform: Option<Platform>,
+        config: TransportConfig,
+    ) -> Result<Self> {
+        Ok(Self::from_context(Arc::new(
+            ApiContext::new_with_transport_config(credential, platform, config)?,
+        )))
+    }
+
+    /// 注入自定义 [`ApiTransport`].
+    pub fn new_with_transport(
+        credential: Option<Credential>,
+        platform: Option<Platform>,
+        transport: Arc<dyn ApiTransport>,
+    ) -> Self {
+        Self::from_context(Arc::new(ApiContext::new_with_transport(
+            credential, platform, transport,
+        )))
+    }
+
+    fn from_context(context: Arc<ApiContext>) -> Self {
+        Client {
             song: SongApi::new(context.clone()),
             search: SearchApi::new(context.clone()),
             singer: SingerApi::new(context.clone()),
@@ -120,7 +198,7 @@ impl Client {
             helper: HelperApi::new(context.clone()),
             private_message: PrivateMessageApi::new(context.clone()),
             context,
-        })
+        }
     }
 
     /// 全局凭证 (只读).
@@ -221,7 +299,7 @@ impl Client {
     /// 执行一个标准 HTTP 请求, 返回原始响应文本.
     pub async fn request_http(
         &self,
-        method: reqwest::Method,
+        method: HttpMethod,
         url: &str,
         opts: &HttpOptions,
     ) -> Result<String> {
@@ -231,7 +309,7 @@ impl Client {
     /// 执行 HTTP 请求并反序列化.
     pub async fn http<T: DeserializeOwned>(
         &self,
-        method: reqwest::Method,
+        method: HttpMethod,
         url: &str,
         opts: &HttpOptions,
     ) -> Result<T> {

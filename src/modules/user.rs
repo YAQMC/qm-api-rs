@@ -269,6 +269,7 @@ impl UserApi {
             .unwrap_or_else(|| self.base.credential());
         let mut opts = RequestOptions::default();
         opts.require_login = true;
+        opts.retry = crate::RetryClass::Write;
         opts.credential = credential.cloned();
         let data = self
             .base
@@ -299,6 +300,7 @@ impl UserApi {
             .unwrap_or_else(|| self.base.credential());
         let mut opts = RequestOptions::default();
         opts.require_login = true;
+        opts.retry = crate::RetryClass::Write;
         opts.credential = credential.cloned();
         let data = self
             .base
@@ -430,6 +432,7 @@ impl UserApi {
             .collect();
         let mut opts = RequestOptions::default();
         opts.require_login = true;
+        opts.retry = crate::RetryClass::Write;
         opts.credential = credential.cloned();
         let data = self
             .base
@@ -458,6 +461,7 @@ impl UserApi {
             .collect();
         let mut opts = RequestOptions::default();
         opts.require_login = true;
+        opts.retry = crate::RetryClass::Write;
         opts.credential = credential.cloned();
         let data = self
             .base
@@ -475,6 +479,7 @@ impl UserApi {
     pub async fn cancel_all_dislike_song(&self, credential: Option<&Credential>) -> Result<bool> {
         let mut opts1 = RequestOptions::default();
         opts1.require_login = true;
+        opts1.retry = crate::RetryClass::Write;
         opts1.credential = credential.cloned();
         opts1.preserve_bool = true;
         let data1 = self
@@ -493,6 +498,7 @@ impl UserApi {
             .to_string();
         let mut opts2 = RequestOptions::default();
         opts2.require_login = true;
+        opts2.retry = crate::RetryClass::Write;
         opts2.credential = credential.cloned();
         let data2 = self
             .base
@@ -566,6 +572,7 @@ impl UserApi {
     ) -> Result<bool> {
         let mut opts = RequestOptions::default();
         opts.require_login = true;
+        opts.retry = crate::RetryClass::Write;
         opts.credential = credential.cloned();
         let data = self
             .base
@@ -600,6 +607,7 @@ impl UserApi {
     ) -> Result<Value> {
         let mut opts = RequestOptions::default();
         opts.require_login = true;
+        opts.retry = crate::RetryClass::Write;
         opts.credential = credential.cloned();
         self.base
             .cgi(

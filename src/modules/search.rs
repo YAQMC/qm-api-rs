@@ -98,7 +98,7 @@ impl SearchApi {
             .base
             .context
             .request_http(
-                reqwest::Method::GET,
+                crate::HttpMethod::Get,
                 "https://c.y.qq.com/splcloud/fcgi-bin/smartbox_new.fcg",
                 &opts,
             )

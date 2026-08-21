@@ -1,6 +1,5 @@
 //! API 请求上下文 (对应 Python 端 `core/api_context.py`).
 
-use reqwest::header::{HeaderMap, HeaderValue};
 use serde_json::{json, Value};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
@@ -12,11 +11,15 @@ use crate::qimei;
 use crate::rate_limiter::TokenBucket;
 use crate::reply::CgiReply;
 use crate::sign::zzc_sign;
+use crate::transport::{
+    ApiTransport, CancellationToken, HttpBody, HttpMethod, RedirectMode, ReqwestApiTransport,
+    RetryClass, TransportConfig, TransportRequest, TransportResponse,
+};
 use crate::versioning::{Platform, VersionPolicy};
 use crate::Credential;
 
 /// CGI 请求选项 (轻量拷贝, 与 `crate::client::CgiOptions` 同构).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct RequestOptions {
     pub comm: Option<Value>,
     pub override_comm: bool,
@@ -25,6 +28,24 @@ pub struct RequestOptions {
     pub platform: Option<Platform>,
     pub sign: bool,
     pub require_login: bool,
+    pub retry: RetryClass,
+    pub cancellation: CancellationToken,
+}
+
+impl Default for RequestOptions {
+    fn default() -> Self {
+        Self {
+            comm: None,
+            override_comm: false,
+            preserve_bool: false,
+            credential: None,
+            platform: None,
+            sign: false,
+            require_login: false,
+            retry: RetryClass::SafeRead,
+            cancellation: CancellationToken::new(),
+        }
+    }
 }
 
 /// Android 平台会话 (账号级运行态, 与设备身份分离).
@@ -84,14 +105,12 @@ fn device_replaced_error(stage: &'static str) -> QmError {
     }
 }
 
-/// 请求上下文: 持有 HTTP 客户端、平台、版本策略、凭证与设备状态.
+/// 请求上下文: 持有 HTTP 传输、平台、版本策略、凭证与设备状态.
 ///
 /// `Device` 是设备指纹 (QIMEI 等) 的**唯一状态源**; session 是账号运行态,
 /// 按账号缓存于 `sessions`, 运行时获取的新 QIMEI 写回 `Device`.
-#[derive(Debug)]
 pub struct ApiContext {
-    /// 底层 HTTP 客户端.
-    pub http: reqwest::Client,
+    transport: Arc<dyn ApiTransport>,
     /// 默认请求平台.
     pub platform: Platform,
     /// 版本策略.
@@ -119,6 +138,16 @@ fn now() -> i64 {
         .as_secs() as i64
 }
 
+impl std::fmt::Debug for ApiContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ApiContext")
+            .field("platform", &self.platform)
+            .field("cgi_base_url", &self.cgi_base_url)
+            .field("qimei_url", &self.qimei_url)
+            .finish_non_exhaustive()
+    }
+}
+
 /// 将 JSON 值转为字符串 (兼容数字/字符串).
 fn value_to_string(v: &Value) -> String {
     match v {
@@ -140,17 +169,29 @@ impl ApiContext {
         platform: Option<Platform>,
         proxy: Option<&str>,
     ) -> Result<Self> {
-        let mut builder = reqwest::Client::builder()
-            .gzip(true)
-            .brotli(true)
-            .cookie_store(true);
-        if let Some(p) = proxy {
-            let proxy = reqwest::Proxy::all(p).map_err(QmError::from)?;
-            builder = builder.proxy(proxy);
-        }
-        let http = builder.build().map_err(QmError::from)?;
-        Ok(ApiContext {
-            http,
+        let mut config = TransportConfig::default();
+        config.proxy = proxy.map(str::to_string);
+        Self::new_with_transport_config(credential, platform, config)
+    }
+
+    /// 使用指定的默认 transport 配置创建上下文.
+    pub fn new_with_transport_config(
+        credential: Option<Credential>,
+        platform: Option<Platform>,
+        config: TransportConfig,
+    ) -> Result<Self> {
+        let transport = Arc::new(ReqwestApiTransport::new(config)?);
+        Ok(Self::new_with_transport(credential, platform, transport))
+    }
+
+    /// 注入自定义 [`ApiTransport`].
+    pub fn new_with_transport(
+        credential: Option<Credential>,
+        platform: Option<Platform>,
+        transport: Arc<dyn ApiTransport>,
+    ) -> Self {
+        ApiContext {
+            transport,
             platform: platform.unwrap_or(Platform::Android),
             version_policy: VersionPolicy::default(),
             cgi_base_url: "https://u.y.qq.com/cgi-bin".to_string(),
@@ -161,7 +202,20 @@ impl ApiContext {
             sessions: tokio::sync::Mutex::new(std::collections::HashMap::new()),
             state_lock: tokio::sync::Mutex::new(()),
             limiter: TokenBucket::default(),
-        })
+        }
+    }
+
+    fn note_configured_origins(&self) {
+        self.transport.allow_origin(&self.cgi_base_url);
+        self.transport.allow_origin(&self.qimei_url);
+    }
+
+    pub(crate) async fn execute_transport(
+        &self,
+        request: TransportRequest,
+    ) -> Result<TransportResponse> {
+        self.note_configured_origins();
+        self.transport.execute(request).await
     }
 
     /// 读取当前全局凭证.
@@ -319,18 +373,23 @@ impl ApiContext {
             .version_policy
             .get_user_agent(Platform::Android, &snapshot.device);
         let resp = self
-            .http
-            .post(format!("{}/musicu.fcg", self.cgi_base_url))
-            .json(&payload)
-            .header("User-Agent", user_agent)
-            .send()
-            .await
-            .map_err(QmError::from)?;
-        let status = resp.status().as_u16();
+            .execute_transport(TransportRequest {
+                method: HttpMethod::Post,
+                url: format!("{}/musicu.fcg", self.cgi_base_url),
+                headers: vec![("User-Agent".into(), user_agent)],
+                query: Vec::new(),
+                body: HttpBody::Json(payload),
+                timeout: None,
+                retry: RetryClass::SafeRead,
+                redirects: RedirectMode::FollowValidated,
+                cancellation: CancellationToken::new(),
+            })
+            .await?;
+        let status = resp.status;
         if status != 200 {
-            return Err(QmError::http(status, resp.text().await.unwrap_or_default()));
+            return Err(QmError::http(status, resp.text()));
         }
-        let value: Value = resp.json().await?;
+        let value: Value = serde_json::from_slice(&resp.body)?;
         let session_data = &value["req_0"]["data"]["session"];
         let uid = value_to_string(&session_data["uid"]);
         let sid = value_to_string(&session_data["sid"]);
@@ -426,33 +485,31 @@ impl ApiContext {
             .unwrap_or_else(|| "1.2.13.6".into());
 
         let (_, headers, body) = qimei::build_qimei_request(device, &app_version, &sdk_version)?;
-        let mut header_map = HeaderMap::new();
-        for (k, v) in headers {
-            if let Ok(v) = HeaderValue::from_str(&v) {
-                if let Ok(name) = reqwest::header::HeaderName::from_bytes(k.as_bytes()) {
-                    header_map.insert(name, v);
-                }
-            }
-        }
         let resp = self
-            .http
-            .post(&self.qimei_url)
-            .headers(header_map)
-            .json(&body)
-            .send()
-            .await
-            .map_err(QmError::from)?;
-        let text = resp.text().await?;
+            .execute_transport(TransportRequest {
+                method: HttpMethod::Post,
+                url: self.qimei_url.clone(),
+                headers,
+                query: Vec::new(),
+                body: HttpBody::Json(body),
+                timeout: None,
+                retry: RetryClass::SafeRead,
+                redirects: RedirectMode::FollowValidated,
+                cancellation: CancellationToken::new(),
+            })
+            .await?;
+        let text = resp.text();
         Ok(qimei::parse_qimei_response(&text))
     }
 
     /// 为 HTTP 请求准备 kwargs (注入 Cookies 与 User-Agent).
+    #[allow(clippy::type_complexity)]
     pub fn prepare_http_kwargs(
         &self,
         credential: Option<&Credential>,
-        mut headers: HeaderMap,
+        mut headers: Vec<(String, String)>,
         mut cookies: Vec<(String, String)>,
-    ) -> (HeaderMap, Vec<(String, String)>) {
+    ) -> (Vec<(String, String)>, Vec<(String, String)>) {
         let cred = credential.cloned().unwrap_or_else(|| self.credential());
         let str_musicid = cred.str_musicid();
         if !str_musicid.is_empty() {
@@ -463,11 +520,11 @@ impl ApiContext {
             cookies.push(("qm_keyst".into(), cred.musickey.clone()));
             cookies.push(("qqmusic_key".into(), cred.musickey));
         }
-        if !headers.contains_key("User-Agent") {
-            headers.insert(
-                "User-Agent",
-                HeaderValue::from_str(&self.get_user_agent(Platform::Web)).unwrap(),
-            );
+        if !headers
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case("User-Agent"))
+        {
+            headers.push(("User-Agent".into(), self.get_user_agent(Platform::Web)));
         }
         (headers, cookies)
     }
@@ -607,17 +664,16 @@ impl ApiContext {
             )
             .await?;
 
-        let mut request = self
-            .http
-            .post(&url)
-            .json(&payload)
-            .header("User-Agent", user_agent);
-        for (k, v) in &query_params {
-            request = request.query(&[(k, v)]);
-        }
-        let resp = request.send().await.map_err(QmError::from)?;
-        let status = resp.status().as_u16();
-        let text = resp.text().await.map_err(QmError::from)?;
+        let mut request = TransportRequest::new(HttpMethod::Post, url);
+        request.headers = vec![("User-Agent".into(), user_agent)];
+        request.query = query_params;
+        request.body = HttpBody::Json(payload);
+        request.retry = opts.retry;
+        request.redirects = RedirectMode::FollowValidated;
+        request.cancellation = opts.cancellation.clone();
+        let resp = self.execute_transport(request).await?;
+        let status = resp.status;
+        let text = resp.text();
         if status != 200 {
             return Err(QmError::http(status, text));
         }
@@ -668,17 +724,16 @@ impl ApiContext {
             )
             .await?;
 
-        let mut request = self
-            .http
-            .post(&url)
-            .json(&payload)
-            .header("User-Agent", user_agent);
-        for (k, v) in &query_params {
-            request = request.query(&[(k, v)]);
-        }
-        let resp = request.send().await.map_err(QmError::from)?;
-        let status = resp.status().as_u16();
-        let text = resp.text().await.map_err(QmError::from)?;
+        let mut request = TransportRequest::new(HttpMethod::Post, url);
+        request.headers = vec![("User-Agent".into(), user_agent)];
+        request.query = query_params;
+        request.body = HttpBody::Json(payload);
+        request.retry = opts.retry;
+        request.redirects = RedirectMode::FollowValidated;
+        request.cancellation = opts.cancellation.clone();
+        let resp = self.execute_transport(request).await?;
+        let status = resp.status;
+        let text = resp.text();
         if status != 200 {
             return Err(QmError::http(status, text));
         }
@@ -726,58 +781,78 @@ impl ApiContext {
         credential: Option<&Credential>,
     ) -> Result<Vec<u8>> {
         self.limiter.acquire().await;
-        let (headers, cookies) = self.prepare_http_kwargs(credential, HeaderMap::new(), Vec::new());
-        let mut request = self.http.get(url).headers(headers);
-        for (k, v) in &cookies {
-            request = request.header("Cookie", format!("{k}={v}"));
+        let (headers, cookies) = self.prepare_http_kwargs(credential, Vec::new(), Vec::new());
+        let mut request = TransportRequest::new(HttpMethod::Get, url);
+        request.headers = merge_cookie_headers(headers, cookies);
+        request.retry = RetryClass::SafeRead;
+        let resp = self.execute_transport(request).await?;
+        if resp.status != 200 {
+            return Err(QmError::http(resp.status, resp.text()));
         }
-        let resp = request.send().await.map_err(QmError::from)?;
-        let status = resp.status().as_u16();
-        if status != 200 {
-            let text = resp.text().await.unwrap_or_default();
-            return Err(QmError::http(status, text));
-        }
-        let bytes = resp.bytes().await.map_err(QmError::from)?;
-        Ok(bytes.to_vec())
+        Ok(resp.body)
     }
 
-    /// 执行标准 HTTP 请求, 返回原始响应文本.
-    pub async fn request_http(
+    /// 执行标准 HTTP 请求, 返回完整响应 (含状态码 / 最终 URL / 头 / 体).
+    pub async fn request_http_raw(
         &self,
-        method: reqwest::Method,
+        method: HttpMethod,
         url: &str,
         opts: &crate::client::HttpOptions,
-    ) -> Result<String> {
+    ) -> Result<TransportResponse> {
         self.limiter.acquire().await;
         let (headers, cookies) = self.prepare_http_kwargs(
             opts.credential.as_ref(),
             opts.headers.clone(),
             opts.cookies.clone(),
         );
-        let mut request = self.http.request(method, url).headers(headers);
-        for (k, v) in &opts.params {
-            request = request.query(&[(k, v)]);
-        }
-        for (k, v) in &cookies {
-            request = request.header("Cookie", format!("{k}={v}"));
-        }
-        if let Some(json) = &opts.json {
-            request = request.json(json);
-        }
-        if let Some(data) = &opts.data {
-            request = request.form(&data);
-        }
-        if let Some(t) = opts.timeout {
-            request = request.timeout(t);
-        }
-        let resp = request.send().await.map_err(QmError::from)?;
-        let status = resp.status().as_u16();
-        let text = resp.text().await.map_err(QmError::from)?;
-        if status != 200 {
-            return Err(QmError::http(status, text));
-        }
-        Ok(text)
+        let body = if let Some(json) = &opts.json {
+            HttpBody::Json(json.clone())
+        } else if let Some(data) = &opts.data {
+            HttpBody::Form(data.clone())
+        } else if let Some(raw) = &opts.body {
+            HttpBody::Bytes(raw.clone())
+        } else {
+            HttpBody::Empty
+        };
+        let mut request = TransportRequest::new(method, url);
+        request.headers = merge_cookie_headers(headers, cookies);
+        request.query = opts.params.clone();
+        request.body = body;
+        request.timeout = opts.timeout;
+        request.retry = opts.retry;
+        request.redirects = opts.redirects;
+        request.cancellation = opts.cancellation.clone();
+        self.execute_transport(request).await
     }
+
+    /// 执行标准 HTTP 请求, 返回原始响应文本.
+    pub async fn request_http(
+        &self,
+        method: HttpMethod,
+        url: &str,
+        opts: &crate::client::HttpOptions,
+    ) -> Result<String> {
+        let resp = self.request_http_raw(method, url, opts).await?;
+        if resp.status != 200 {
+            return Err(QmError::http(resp.status, resp.text()));
+        }
+        Ok(resp.text())
+    }
+}
+
+fn merge_cookie_headers(
+    mut headers: Vec<(String, String)>,
+    cookies: Vec<(String, String)>,
+) -> Vec<(String, String)> {
+    if !cookies.is_empty() {
+        let cookie = cookies
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join("; ");
+        headers.push(("Cookie".into(), cookie));
+    }
+    headers
 }
 
 /// 解析 CGI 全局信封并提取 `req_{index}` 的固定响应 `{ code, data }`.

@@ -45,6 +45,7 @@ impl HelperApi {
         let mut opts = RequestOptions::default();
         opts.sign = true;
         opts.require_login = true;
+        opts.retry = crate::RetryClass::Write;
         opts.credential = credential.cloned();
         let data = self
             .base
@@ -73,6 +74,7 @@ impl HelperApi {
         let mut opts = RequestOptions::default();
         opts.sign = true;
         opts.require_login = true;
+        opts.retry = crate::RetryClass::Write;
         opts.credential = credential.cloned();
         let data = self
             .base

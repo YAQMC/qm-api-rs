@@ -1,0 +1,26 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88.0
+        with:
+          components: rustfmt, clippy
+      - name: Format
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Test
+        run: cargo test --all-features
+      - name: No public reqwest types
+        run: |
+          if grep -REn 'pub[[:space:]].*(reqwest::(Client|Method|header::|Response|Error|Url|Proxy))' src; then
+            echo "public reqwest types leaked" >&2
+            exit 1
+          fi

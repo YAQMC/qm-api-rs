@@ -50,8 +50,18 @@ if reply.code == 20276 { /* 需要验证码 */ }
 let client = Client::new_with_proxy(None, None, Some("http://127.0.0.1:7890"))?;
 ```
 
+注入自定义 HTTP 传输（超时 / allowlist / 取消由实现自行保证）：
+
+```rust
+use std::sync::Arc;
+use qqmusic_api::{ApiTransport, Client};
+
+let transport: Arc<dyn ApiTransport> = Arc::new(/* 你的实现 */);
+let client = Client::new_with_transport(None, None, transport);
+```
+
 > 说明：当前仅支持 HTTP 代理；未暴露 DNS resolver/resolve 配置。MQTT 手机端
-> 扫码登录使用独立的 WebSocket 连接，不经过该代理。
+> 扫码登录使用独立的 WebSocket 连接，不经过该代理，也不走 `ApiTransport`。
 
 ### 限流
 

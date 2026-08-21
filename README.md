@@ -13,7 +13,7 @@
 
 - 🎵 涵盖常见 API：歌曲 / 搜索 / 歌手 / 专辑 / 歌词 / MV / 排行榜 / 歌单 / 评论 / 推荐 / 用户 / 登录 / 私信 / 上传辅助
 - 🚀 调用简便，函数命名易懂，方法均带详细文档
-- ⚡ 完全异步（`tokio` + `reqwest`）
+- ⚡ 完全异步（`tokio` + 可注入 `ApiTransport`，默认 reqwest 0.12）
 - 🔐 内置签名算法（`zzc_sign`）与 QRC 歌词 3DES 解密
 - 📱 支持 Android / Desktop / Web 三种平台请求
 - 🔁 连续翻页（`Pager`）、批量 CGI 请求（`request_cgi_batch`）、内置限流

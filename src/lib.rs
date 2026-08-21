@@ -56,6 +56,7 @@ pub mod qmc;
 mod rate_limiter;
 mod reply;
 mod sign;
+mod transport;
 mod tripledes;
 mod utils;
 mod versioning;
@@ -78,6 +79,10 @@ pub use modules::singer::{AreaType, GenreType, IndexType, SexType, TabType};
 pub use modules::song::{SongFileInfo, SongFileType, SongQuality};
 pub use pagination::{offset, page, Pager};
 pub use reply::{BatchReport, CgiReply};
+pub use transport::{
+    ApiTransport, CancellationToken, HttpBody, HttpMethod, RedirectMode, ReqwestApiTransport,
+    RetryClass, TransportConfig, TransportRequest, TransportResponse,
+};
 pub use utils::{calc_md5, get_guid, get_search_id, hash33};
 pub use versioning::{Platform, VersionPolicy};
 

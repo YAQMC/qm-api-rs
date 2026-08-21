@@ -72,6 +72,7 @@ impl SonglistApi {
     ) -> Result<CreateDeleteSonglistResp> {
         let mut opts = RequestOptions::default();
         opts.require_login = true;
+        opts.retry = crate::RetryClass::Write;
         opts.credential = credential.cloned();
         let data = self
             .base
@@ -93,6 +94,7 @@ impl SonglistApi {
     ) -> Result<CreateDeleteSonglistResp> {
         let mut opts = RequestOptions::default();
         opts.require_login = true;
+        opts.retry = crate::RetryClass::Write;
         opts.credential = credential.cloned();
         let data = self
             .base
@@ -116,6 +118,7 @@ impl SonglistApi {
     ) -> Result<bool> {
         let mut opts = RequestOptions::default();
         opts.require_login = true;
+        opts.retry = crate::RetryClass::Write;
         opts.credential = credential.cloned();
         opts.preserve_bool = true;
         let result = self
@@ -144,6 +147,7 @@ impl SonglistApi {
     ) -> Result<bool> {
         let mut opts = RequestOptions::default();
         opts.require_login = true;
+        opts.retry = crate::RetryClass::Write;
         opts.credential = credential.cloned();
         let result = self
             .base
@@ -255,6 +259,7 @@ impl SonglistApi {
     ) -> Result<bool> {
         let mut opts = RequestOptions::default();
         opts.require_login = true;
+        opts.retry = crate::RetryClass::Write;
         opts.credential = credential.cloned();
         let data = self
             .base
@@ -276,6 +281,7 @@ impl SonglistApi {
     ) -> Result<Value> {
         let mut opts = RequestOptions::default();
         opts.require_login = true;
+        opts.retry = crate::RetryClass::Write;
         opts.credential = credential.cloned();
         self.base
             .cgi("music.favor_system_write", "do_favor", param, opts)

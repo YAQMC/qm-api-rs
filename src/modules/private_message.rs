@@ -35,6 +35,12 @@ impl PrivateMessageApi {
         opts
     }
 
+    fn write_opts(&self, credential: Option<&Credential>) -> RequestOptions {
+        let mut opts = self.opts(credential);
+        opts.retry = crate::RetryClass::Write;
+        opts
+    }
+
     /// 获取私信会话列表.
     #[allow(clippy::too_many_arguments)]
     pub async fn get_sessions(
@@ -85,7 +91,7 @@ impl PrivateMessageApi {
                 PRIVATE_MSG_WRITE_MODULE,
                 "DeleteSession",
                 json!({ "session_id": session_id, "super_msg_flag": super_msg_flag }),
-                self.opts(credential),
+                self.write_opts(credential),
             )
             .await?;
         Ok(serde_json::from_value(data)?)
@@ -201,7 +207,7 @@ impl PrivateMessageApi {
                 PRIVATE_MSG_WRITE_MODULE,
                 method,
                 params,
-                self.opts(credential),
+                self.write_opts(credential),
             )
             .await?;
         Ok(serde_json::from_value(data)?)
@@ -221,7 +227,7 @@ impl PrivateMessageApi {
                 PRIVATE_MSG_WRITE_MODULE,
                 "DeleteMessage",
                 json!({ "session_id": session_id, "msg_id": msg_id, "super_msg_flag": super_msg_flag }),
-                self.opts(credential),
+                self.write_opts(credential),
             )
             .await?;
         Ok(serde_json::from_value(data)?)
@@ -240,7 +246,7 @@ impl PrivateMessageApi {
                 PRIVATE_MSG_WRITE_MODULE,
                 "ClearSession",
                 json!({ "session_id": session_id, "super_msg_flag": super_msg_flag }),
-                self.opts(credential),
+                self.write_opts(credential),
             )
             .await?;
         Ok(serde_json::from_value(data)?)
@@ -259,7 +265,7 @@ impl PrivateMessageApi {
                 PRIVATE_MSG_WRITE_MODULE,
                 "SetConfig",
                 json!({ "config_type": config_type, "config_value_str": config_value }),
-                self.opts(credential),
+                self.write_opts(credential),
             )
             .await?;
         Ok(serde_json::from_value(data)?)
@@ -327,7 +333,7 @@ impl PrivateMessageApi {
                 PRIVATE_MSG_WRITE_MODULE,
                 "ActCardMsgCallBack",
                 params,
-                self.opts(credential),
+                self.write_opts(credential),
             )
             .await?;
         Ok(serde_json::from_value(data)?)
@@ -397,7 +403,7 @@ impl PrivateMessageApi {
                 PRIVATE_MSG_WRITE_MODULE,
                 "SetAllMsgMardRead",
                 json!({ "CmdFlag": cmd_flag, "EncryptUin": encrypt_uin }),
-                self.opts(credential),
+                self.write_opts(credential),
             )
             .await?;
         Ok(serde_json::from_value(data)?)

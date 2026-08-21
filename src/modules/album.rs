@@ -93,6 +93,7 @@ impl AlbumApi {
     ) -> Result<AlbumFavWriteResponse> {
         let mut opts = RequestOptions::default();
         opts.require_login = true;
+        opts.retry = crate::RetryClass::Write;
         opts.credential = credential.cloned();
         let data = self
             .base
@@ -120,6 +121,7 @@ impl AlbumApi {
     ) -> Result<AlbumFavWriteResponse> {
         let mut opts = RequestOptions::default();
         opts.require_login = true;
+        opts.retry = crate::RetryClass::Write;
         opts.credential = credential.cloned();
         let data = self
             .base

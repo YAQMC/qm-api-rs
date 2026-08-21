@@ -9,6 +9,7 @@ use crate::error::{QmError, Result};
 use crate::models::login::*;
 use crate::models::Credential;
 use crate::reply::CgiReply;
+use crate::transport::{HttpMethod, RedirectMode, RetryClass};
 use crate::utils::hash33;
 use crate::versioning::Platform;
 
@@ -137,7 +138,7 @@ impl LoginApi {
                 .base
                 .context
                 .request_http(
-                    reqwest::Method::GET,
+                    HttpMethod::Get,
                     "https://c6.y.qq.com/rsc/fcgi-bin/fcg_get_profile_homepage.fcg",
                     &opts,
                 )
@@ -225,6 +226,7 @@ impl LoginApi {
         let mut opts = RequestOptions::default();
         opts.comm = Some(json!({ "tmeLoginType": target.login_type }));
         opts.credential = Some(target);
+        opts.retry = RetryClass::Write;
         let reply = self
             .base
             .cgi_reply("music.login.LoginServer", "Login", param, opts)
@@ -244,6 +246,7 @@ impl LoginApi {
             .unwrap_or_else(|| self.base.credential());
         let mut opts = RequestOptions::default();
         opts.require_login = true;
+        opts.retry = RetryClass::Write;
         opts.credential = Some(target.clone());
         let reply = self
             .base
@@ -292,36 +295,24 @@ impl LoginApi {
             ("pt_3rd_aid".to_string(), "100497308".to_string()),
         ];
         let mut opts = crate::client::HttpOptions::default();
-        opts.headers.insert(
-            "Referer",
-            reqwest::header::HeaderValue::from_static("https://xui.ptlogin2.qq.com/"),
-        );
+        opts.headers
+            .push(("Referer".into(), "https://xui.ptlogin2.qq.com/".into()));
         opts.params = params;
-
-        // 直接使用 context 的 HTTP 客户端 (共享代理/限流/cookie).
-        // 使用 reqwest `.query()` 进行 URL 编码, 避免参数含保留字符出错.
-        self.base.context.limiter.acquire().await;
+        opts.redirects = RedirectMode::None;
         let resp = self
             .base
             .context
-            .http
-            .get(url)
-            .query(&opts.params)
-            .headers(opts.headers)
-            .send()
-            .await
-            .map_err(QmError::from)?;
-        let status = resp.status().as_u16();
-        if status != 200 {
-            return Err(QmError::http(status, String::new()));
+            .request_http_raw(HttpMethod::Get, url, &opts)
+            .await?;
+        if resp.status != 200 {
+            return Err(QmError::http(resp.status, String::new()));
         }
-        let qrsig = extract_cookie(&resp, "qrsig");
+        let qrsig = extract_cookie(&resp.headers, "qrsig");
         if qrsig.is_empty() {
             return Err(QmError::ApiData("获取 qrsig 失败".into()));
         }
-        let bytes = resp.bytes().await.map_err(QmError::from)?;
         Ok(QR {
-            data: bytes.to_vec(),
+            data: resp.body,
             qr_type: QRLoginType::Qq,
             mimetype: "image/png".into(),
             identifier: qrsig,
@@ -355,7 +346,7 @@ impl LoginApi {
             .base
             .context
             .request_http(
-                reqwest::Method::GET,
+                HttpMethod::Get,
                 "https://open.weixin.qq.com/connect/qrconnect",
                 &opts,
             )
@@ -364,23 +355,17 @@ impl LoginApi {
         let uuid = extract_between(&text, "uuid=", "\"");
         let uuid = uuid.ok_or_else(|| QmError::ApiData("获取 uuid 失败".into()))?;
         let opts = crate::client::HttpOptions {
-            headers: {
-                let mut h = reqwest::header::HeaderMap::new();
-                h.insert(
-                    "Referer",
-                    reqwest::header::HeaderValue::from_static(
-                        "https://open.weixin.qq.com/connect/qrconnect",
-                    ),
-                );
-                h
-            },
+            headers: vec![(
+                "Referer".into(),
+                "https://open.weixin.qq.com/connect/qrconnect".into(),
+            )],
             ..Default::default()
         };
         let text = self
             .base
             .context
             .request_http(
-                reqwest::Method::GET,
+                HttpMethod::Get,
                 &format!("https://open.weixin.qq.com/connect/qrcode/{uuid}"),
                 &opts,
             )
@@ -397,6 +382,7 @@ impl LoginApi {
     pub async fn get_mobile_qr(&self) -> Result<QR> {
         let mut opts = RequestOptions::default();
         opts.comm = Some(json!({ "ct": 23, "cv": 0 }));
+        opts.retry = RetryClass::Write;
         let mut param = json!({ "tmeAppID": "qqmusic" });
         let version_params = self.base.build_version_params(None);
         if let Value::Object(map) = version_params {
@@ -643,6 +629,7 @@ impl LoginApi {
                 }
                 let mut opts = RequestOptions::default();
                 opts.comm = Some(json!({ "tmeLoginType": 6 }));
+                opts.retry = RetryClass::Write;
                 let reply = self
                     .base
                     .cgi_reply(
@@ -693,17 +680,16 @@ impl LoginApi {
             ("has_onekey".to_string(), "1".to_string()),
         ];
         let mut opts = crate::client::HttpOptions::default();
-        opts.headers.insert(
-            "Referer",
-            reqwest::header::HeaderValue::from_static("https://xui.ptlogin2.qq.com/"),
-        );
+        opts.headers
+            .push(("Referer".into(), "https://xui.ptlogin2.qq.com/".into()));
         opts.cookies = vec![("qrsig".to_string(), qrsig)];
         opts.params = params;
+        opts.retry = RetryClass::AuthPoll;
         let text = self
             .base
             .context
             .request_http(
-                reqwest::Method::GET,
+                HttpMethod::Get,
                 "https://ssl.ptlogin2.qq.com/ptqrlogin",
                 &opts,
             )
@@ -749,22 +735,16 @@ impl LoginApi {
                 ("uuid".to_string(), uuid.clone()),
                 ("_".to_string(), now_ms().to_string()),
             ],
-            headers: {
-                let mut h = reqwest::header::HeaderMap::new();
-                h.insert(
-                    "Referer",
-                    reqwest::header::HeaderValue::from_static("https://open.weixin.qq.com/"),
-                );
-                h
-            },
+            headers: vec![("Referer".into(), "https://open.weixin.qq.com/".into())],
             timeout: Some(std::time::Duration::from_secs(35)),
+            retry: RetryClass::AuthPoll,
             ..Default::default()
         };
         let text = self
             .base
             .context
             .request_http(
-                reqwest::Method::GET,
+                HttpMethod::Get,
                 "https://lp.open.weixin.qq.com/connect/l/qrconnect",
                 &opts,
             )
@@ -823,28 +803,24 @@ impl LoginApi {
             ("pt_3rd_aid", "100497308"),
         ];
         let mut opts = crate::client::HttpOptions::default();
-        opts.headers.insert(
-            "Referer",
-            reqwest::header::HeaderValue::from_static("https://xui.ptlogin2.qq.com/"),
-        );
+        opts.headers
+            .push(("Referer".into(), "https://xui.ptlogin2.qq.com/".into()));
         opts.params = params
             .into_iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
-
-        // 使用 reqwest `.query()` 进行正确的 URL 编码 (ptsigx 等含保留字符).
-        self.base.context.limiter.acquire().await;
+        opts.redirects = RedirectMode::None;
+        opts.retry = RetryClass::Write;
         let resp = self
             .base
             .context
-            .http
-            .get("https://ssl.ptlogin2.graph.qq.com/check_sig")
-            .query(&opts.params)
-            .headers(opts.headers)
-            .send()
-            .await
-            .map_err(QmError::from)?;
-        let p_skey = extract_cookie(&resp, "p_skey");
+            .request_http_raw(
+                HttpMethod::Get,
+                "https://ssl.ptlogin2.graph.qq.com/check_sig",
+                &opts,
+            )
+            .await?;
+        let p_skey = extract_cookie(&resp.headers, "p_skey");
         if p_skey.is_empty() {
             return Err(QmError::ApiData("获取 p_skey 失败".into()));
         }
@@ -864,33 +840,31 @@ impl LoginApi {
             "g_tk": hash33(&p_skey, 5381),
             "auth_time": now_ms().to_string(),
         });
-        // 使用 context 的 HTTP 客户端 (共享代理/限流/cookie), 跟随重定向后
-        // 从最终 URL 提取授权码 (OAuth 跳转到 redirect_uri?code=...).
-        self.base.context.limiter.acquire().await;
+        let mut auth_opts = crate::client::HttpOptions::default();
+        auth_opts
+            .headers
+            .push(("Referer".into(), "https://xui.ptlogin2.qq.com/".into()));
+        auth_opts.cookies = vec![("uin".into(), uin.to_string()), ("p_skey".into(), p_skey)];
+        auth_opts.data = Some(data);
+        auth_opts.retry = RetryClass::Write;
+        auth_opts.redirects = RedirectMode::FollowValidated;
         let resp = self
             .base
             .context
-            .http
-            .post("https://graph.qq.com/oauth2.0/authorize")
-            .header("Referer", "https://xui.ptlogin2.qq.com/")
-            .header("Cookie", format!("uin={uin}; p_skey={p_skey}"))
-            .form(&data)
-            .send()
-            .await
-            .map_err(QmError::from)?;
-        let status = resp.status().as_u16();
-        let final_url = resp.url().clone();
-        let code = final_url
-            .query_pairs()
-            .find(|(k, _)| k == "code")
-            .map(|(_, v)| v.into_owned())
-            .unwrap_or_default();
-        if status != 200 || code.is_empty() {
+            .request_http_raw(
+                HttpMethod::Post,
+                "https://graph.qq.com/oauth2.0/authorize",
+                &auth_opts,
+            )
+            .await?;
+        let code = query_param(&resp.final_url, "code").unwrap_or_default();
+        if resp.status != 200 || code.is_empty() {
             return Err(QmError::ApiData("获取 code 失败".into()));
         }
 
         let mut opts = RequestOptions::default();
         opts.comm = Some(json!({ "tmeLoginType": 2 }));
+        opts.retry = RetryClass::Write;
         let reply = self
             .base
             .cgi_reply(
@@ -907,6 +881,7 @@ impl LoginApi {
     async fn authorize_wx_qr(&self, code: &str) -> Result<Credential> {
         let mut opts = RequestOptions::default();
         opts.comm = Some(json!({ "tmeLoginType": 1 }));
+        opts.retry = RetryClass::Write;
         let reply = self
             .base
             .cgi_reply(
@@ -935,6 +910,7 @@ impl LoginApi {
         let mut opts = RequestOptions::default();
         opts.comm = Some(json!({ "tmeLoginMethod": 3 }));
         opts.platform = Some(Platform::Android);
+        opts.retry = RetryClass::Write;
         let reply = self
             .base
             .cgi_reply("music.login.LoginServer", "SendPhoneAuthCode", param, opts)
@@ -979,6 +955,7 @@ impl LoginApi {
         let mut opts = RequestOptions::default();
         opts.comm = Some(json!({ "tmeLoginMethod": 3, "tmeLoginType": 0 }));
         opts.platform = Some(Platform::Android);
+        opts.retry = RetryClass::Write;
         let reply = self
             .base
             .cgi_reply("music.login.LoginServer", "Login", param, opts)
@@ -995,17 +972,25 @@ fn extract_between(text: &str, start: &str, end: &str) -> Option<String> {
     Some(rest[..end_idx].to_string())
 }
 
+fn query_param(url: &str, name: &str) -> Option<String> {
+    let url = url::Url::parse(url).ok()?;
+    url.query_pairs()
+        .find(|(k, _)| k == name)
+        .map(|(_, v)| v.into_owned())
+}
+
 /// 从响应头中提取指定 Cookie 值.
-fn extract_cookie(resp: &reqwest::Response, name: &str) -> String {
+fn extract_cookie(headers: &[(String, String)], name: &str) -> String {
     let mut value = String::new();
-    for header in resp.headers().get_all("set-cookie") {
-        if let Ok(s) = header.to_str() {
-            if let Some(part) = s.split(';').next() {
-                let part = part.trim();
-                if let Some((k, v)) = part.split_once('=') {
-                    if k.trim() == name {
-                        value = v.to_string();
-                    }
+    for (k, s) in headers {
+        if !k.eq_ignore_ascii_case("set-cookie") {
+            continue;
+        }
+        if let Some(part) = s.split(';').next() {
+            let part = part.trim();
+            if let Some((ck, cv)) = part.split_once('=') {
+                if ck.trim() == name {
+                    value = cv.to_string();
                 }
             }
         }

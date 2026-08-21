@@ -231,6 +231,7 @@ impl CommentApi {
         }
         let mut opts = RequestOptions::default();
         opts.require_login = true;
+        opts.retry = crate::RetryClass::Write;
         opts.credential = credential.cloned();
         let data = self
             .base
@@ -252,6 +253,7 @@ impl CommentApi {
     ) -> Result<bool> {
         let mut opts = RequestOptions::default();
         opts.require_login = true;
+        opts.retry = crate::RetryClass::Write;
         opts.credential = credential.cloned();
         let data = self
             .base
@@ -300,6 +302,7 @@ impl CommentApi {
     ) -> Result<Value> {
         let mut opts = RequestOptions::default();
         opts.require_login = true;
+        opts.retry = crate::RetryClass::Write;
         opts.credential = credential.cloned();
         self.base
             .cgi(

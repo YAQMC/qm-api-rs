@@ -21,7 +21,7 @@ pub enum ErrorCategory {
     Other,
 }
 
-/// 网络错误分类 (从底层 reqwest 错误提取, 不再丢失语义).
+/// 网络错误分类 (从底层传输错误提取, 不再丢失语义).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NetworkErrorKind {
     /// 超时.
@@ -34,6 +34,8 @@ pub enum NetworkErrorKind {
     Redirect,
     /// 响应体/解码失败.
     Body,
+    /// 调用方取消 (`CancellationToken`).
+    Cancelled,
     /// 其他.
     Other,
 }
@@ -249,9 +251,17 @@ impl QmError {
     }
 
     /// 该错误是否可安全重试 (网络抖动 / 限流 / 服务端 5xx).
+    ///
+    /// 取消与请求构造失败不可重试.
     pub fn is_retryable(&self) -> bool {
         match self {
-            QmError::Network(_) => true,
+            QmError::Network(n) => matches!(
+                n.kind,
+                NetworkErrorKind::Timeout
+                    | NetworkErrorKind::Connect
+                    | NetworkErrorKind::Body
+                    | NetworkErrorKind::Other
+            ),
             QmError::RateLimited => true,
             QmError::Http { status, .. } => *status == 429 || *status >= 500,
             QmError::CgiApi { code, .. } => *code == 2001 || *code == 104604,
@@ -273,8 +283,35 @@ fn classify_cgi_code(code: i64) -> ErrorCategory {
     }
 }
 
-impl From<reqwest::Error> for QmError {
-    fn from(e: reqwest::Error) -> Self {
+impl QmError {
+    /// 构造 `NetworkErrorKind::Other` 类网络错误 (供 MQTT 等自有传输使用).
+    pub(crate) fn network(message: impl Into<String>) -> Self {
+        Self::network_kind(NetworkErrorKind::Other, message)
+    }
+
+    pub(crate) fn network_kind(kind: NetworkErrorKind, message: impl Into<String>) -> Self {
+        QmError::Network(NetworkError {
+            kind,
+            message: message.into(),
+        })
+    }
+
+    pub(crate) fn cancelled() -> Self {
+        Self::network_kind(NetworkErrorKind::Cancelled, "request cancelled")
+    }
+
+    pub(crate) fn allowlist_denied(host: &str) -> Self {
+        QmError::Protocol {
+            stage: "allowlist",
+            message: format!("host not allowed: {host}"),
+        }
+    }
+
+    /// 默认 transport 内部把底层 HTTP 错误映射为 `QmError::Network`.
+    #[rustfmt::skip]
+    pub(crate) fn map_transport_error(
+        e: reqwest::Error,
+    ) -> Self {
         let kind = if e.is_timeout() {
             NetworkErrorKind::Timeout
         } else if e.is_connect() {
@@ -288,20 +325,7 @@ impl From<reqwest::Error> for QmError {
         } else {
             NetworkErrorKind::Other
         };
-        QmError::Network(NetworkError {
-            kind,
-            message: e.to_string(),
-        })
-    }
-}
-
-impl QmError {
-    /// 构造 `NetworkErrorKind::Other` 类网络错误 (供 MQTT 等自有传输使用).
-    pub(crate) fn network(message: impl Into<String>) -> Self {
-        QmError::Network(NetworkError {
-            kind: NetworkErrorKind::Other,
-            message: message.into(),
-        })
+        Self::network_kind(kind, e.to_string())
     }
 }
 
@@ -408,6 +432,7 @@ mod tests {
         );
 
         assert!(QmError::network("x").is_retryable());
+        assert!(!QmError::cancelled().is_retryable());
         assert_eq!(QmError::network("x").to_string(), "network error: x");
         // 结构化 kind 可被调用方区分 (如登录长轮询判断 timeout).
         match QmError::network("x") {
