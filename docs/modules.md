@@ -263,7 +263,10 @@ album.get_new_album(area, num, page) -> GetNewAlbumResponse
 
 ```rust
 lyric.get_lyric(value, song_type, qrc, trans, roma, singing_annotations) -> GetLyricResponse
-// 自动执行 QRC 3DES 解密
+// 钉 Web + 未签名 musicu.fcg；同时带 songMID/songMid（数字 id 则 songID）
+// crypt 默认省略；需要加密字段时用 get_lyric_with_crypt(..., Some(1))
+// GetLyricResponse::parse 对加密字段就地解密（不是下游 LyricDocument）
+lyric.get_lyric_with_crypt(..., crypt: Option<i64>) -> GetLyricResponse
 lyric.get_singing_annotations_info(songid) -> GetSingingAnnotationsInfoResponse
 lyric.get_multi_style_trans_lyric(songid) -> BatchGetMultiStyleTransLyricResponse
 lyric.is_ai_dict_exists(songid) -> IsAIDictExistsResponse

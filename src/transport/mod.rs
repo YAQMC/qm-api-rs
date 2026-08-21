@@ -1,7 +1,9 @@
 //! 可注入的 HTTP 传输 (`ApiTransport`).
 //!
 //! 公开请求/响应类型不暴露 `reqwest`. 默认实现 `ReqwestApiTransport` 使用
-//! reqwest **0.12** (cookie_store / gzip / brotli), 仅存在于本模块的私有子模块.
+//! reqwest **0.12** (gzip / brotli / cookie_store), 仅存在于本模块的私有子模块.
+//! CGI 鉴权与浏览器头由库写在 [`TransportRequest`] 上, 实现 **不必** 提供
+//! cookie jar; 默认实现的 cookie_store 只服务 ptlogin / 微信等 HTTP 登录跳转.
 //!
 //! ## 取消
 //!
@@ -192,6 +194,8 @@ impl TransportResponse {
 ///
 /// `Client::new` / `ApiContext::new` 使用 [`ReqwestApiTransport`].
 /// 下游可通过 `new_with_transport` 注入 `Arc<dyn ApiTransport>`.
+///
+/// 实现不必维护 cookie store: CGI 的 `Cookie` / `Referer` / `Origin` 已由库填好.
 #[async_trait::async_trait]
 pub trait ApiTransport: Send + Sync {
     async fn execute(&self, request: TransportRequest) -> Result<TransportResponse>;

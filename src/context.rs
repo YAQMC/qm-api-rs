@@ -372,19 +372,14 @@ impl ApiContext {
         let user_agent = self
             .version_policy
             .get_user_agent(Platform::Android, &snapshot.device);
-        let resp = self
-            .execute_transport(TransportRequest {
-                method: HttpMethod::Post,
-                url: format!("{}/musicu.fcg", self.cgi_base_url),
-                headers: vec![("User-Agent".into(), user_agent)],
-                query: Vec::new(),
-                body: HttpBody::Json(payload),
-                timeout: None,
-                retry: RetryClass::SafeRead,
-                redirects: RedirectMode::FollowValidated,
-                cancellation: CancellationToken::new(),
-            })
-            .await?;
+        let url = format!("{}/musicu.fcg", self.cgi_base_url);
+        let mut request = TransportRequest::new(HttpMethod::Post, url.clone());
+        request.headers = self.cgi_headers(&url, user_agent, Some(credential));
+        request.body = HttpBody::Json(payload);
+        request.retry = RetryClass::SafeRead;
+        request.redirects = RedirectMode::FollowValidated;
+        request.cancellation = CancellationToken::new();
+        let resp = self.execute_transport(request).await?;
         let status = resp.status;
         if status != 200 {
             return Err(QmError::http(status, resp.text()));
@@ -529,6 +524,25 @@ impl ApiContext {
         (headers, cookies)
     }
 
+    /// CGI 出口统一组头: User-Agent + Credential Cookie + 缺省时的 y.qq.com Referer/Origin.
+    ///
+    /// 鉴权 Cookie 写在请求上, 不依赖 transport cookie jar.
+    fn cgi_headers(
+        &self,
+        url: &str,
+        user_agent: String,
+        credential: Option<&Credential>,
+    ) -> Vec<(String, String)> {
+        let (headers, cookies) = self.prepare_http_kwargs(
+            credential,
+            vec![("User-Agent".into(), user_agent)],
+            Vec::new(),
+        );
+        let mut headers = merge_cookie_headers(headers, cookies);
+        ensure_yqq_cgi_headers(url, &mut headers);
+        headers
+    }
+
     /// 构建 CGI 请求的 (url, payload, params, headers).
     #[allow(clippy::too_many_arguments)]
     pub async fn build_api_kwargs(
@@ -626,6 +640,11 @@ impl ApiContext {
 
     /// 执行一个 CGI 请求, 返回固定形状的响应 `CgiReply { code, data }`.
     ///
+    /// 对 `u.y.qq.com` / `c.y.qq.com` / `c6.y.qq.com` (以及本地 mock CGI)
+    /// 在请求尚未携带时补上 `Referer: https://y.qq.com/` 与
+    /// `Origin: https://y.qq.com`, 不覆盖已有 Referer (如 ptlogin).
+    /// Cookie 由 [`Credential`] 写入请求, 不依赖 transport cookie jar.
+    ///
     /// transport 层不解释业务错误码: 无论 `req_0.code` 是否为 0, 均以
     /// `CgiReply` 返回, 由调用方决定如何处理 (参见 `CgiReply::require_success`).
     /// 仅在 HTTP 状态异常或全局信封 (`code != 0`) 时返回错误.
@@ -664,8 +683,9 @@ impl ApiContext {
             )
             .await?;
 
+        let headers = self.cgi_headers(&url, user_agent, opts.credential.as_ref());
         let mut request = TransportRequest::new(HttpMethod::Post, url);
-        request.headers = vec![("User-Agent".into(), user_agent)];
+        request.headers = headers;
         request.query = query_params;
         request.body = HttpBody::Json(payload);
         request.retry = opts.retry;
@@ -724,8 +744,9 @@ impl ApiContext {
             )
             .await?;
 
+        let headers = self.cgi_headers(&url, user_agent, opts.credential.as_ref());
         let mut request = TransportRequest::new(HttpMethod::Post, url);
-        request.headers = vec![("User-Agent".into(), user_agent)];
+        request.headers = headers;
         request.query = query_params;
         request.body = HttpBody::Json(payload);
         request.retry = opts.retry;
@@ -853,6 +874,40 @@ fn merge_cookie_headers(
         headers.push(("Cookie".into(), cookie));
     }
     headers
+}
+
+fn has_header(headers: &[(String, String)], name: &str) -> bool {
+    headers
+        .iter()
+        .any(|(key, _)| key.eq_ignore_ascii_case(name))
+}
+
+fn is_yqq_cgi_url(url: &str) -> bool {
+    let Ok(parsed) = url::Url::parse(url) else {
+        return false;
+    };
+    let host = parsed.host_str().unwrap_or("");
+    if matches!(host, "u.y.qq.com" | "c.y.qq.com" | "c6.y.qq.com") {
+        return true;
+    }
+    let loopback = host == "127.0.0.1" || host == "localhost" || host == "::1";
+    loopback
+        && (parsed.path().contains("/cgi-bin")
+            || parsed.path().contains("musicu.fcg")
+            || parsed.path().contains("musics.fcg"))
+}
+
+/// 对 QQ 音乐 CGI host 补浏览器头. 已有 Referer/Origin (如 ptlogin) 不覆盖.
+fn ensure_yqq_cgi_headers(url: &str, headers: &mut Vec<(String, String)>) {
+    if !is_yqq_cgi_url(url) {
+        return;
+    }
+    if !has_header(headers, "referer") {
+        headers.push(("Referer".into(), "https://y.qq.com/".into()));
+    }
+    if !has_header(headers, "origin") {
+        headers.push(("Origin".into(), "https://y.qq.com".into()));
+    }
 }
 
 /// 解析 CGI 全局信封并提取 `req_{index}` 的固定响应 `{ code, data }`.
@@ -1110,6 +1165,138 @@ mod tests {
         let report = CgiReply::report(&replies);
         assert_eq!(report.succeeded, 1);
         assert_eq!(report.failures, vec![(1, 2001)]);
+    }
+
+    #[test]
+    fn yqq_cgi_gets_referer_and_origin_when_missing() {
+        let mut headers = vec![("User-Agent".into(), "x".into())];
+        ensure_yqq_cgi_headers("https://u.y.qq.com/cgi-bin/musicu.fcg", &mut headers);
+        assert!(headers.iter().any(
+            |(key, value)| key.eq_ignore_ascii_case("referer") && value == "https://y.qq.com/"
+        ));
+        assert!(headers
+            .iter()
+            .any(|(key, value)| key.eq_ignore_ascii_case("origin") && value == "https://y.qq.com"));
+    }
+
+    #[test]
+    fn existing_ptlogin_referer_is_not_replaced() {
+        let mut headers = vec![("Referer".into(), "https://xui.ptlogin2.qq.com/".into())];
+        ensure_yqq_cgi_headers("https://u.y.qq.com/cgi-bin/musicu.fcg", &mut headers);
+        assert_eq!(
+            headers
+                .iter()
+                .find(|(key, _)| key.eq_ignore_ascii_case("referer"))
+                .map(|(_, value)| value.as_str()),
+            Some("https://xui.ptlogin2.qq.com/")
+        );
+        assert!(headers
+            .iter()
+            .any(|(key, value)| key.eq_ignore_ascii_case("origin") && value == "https://y.qq.com"));
+    }
+
+    #[test]
+    fn ptlogin_host_does_not_get_yqq_cgi_headers() {
+        let mut headers = vec![("User-Agent".into(), "x".into())];
+        ensure_yqq_cgi_headers("https://ssl.ptlogin2.qq.com/ptqrshow", &mut headers);
+        assert!(!headers
+            .iter()
+            .any(|(key, _)| key.eq_ignore_ascii_case("referer")));
+        assert!(!headers
+            .iter()
+            .any(|(key, _)| key.eq_ignore_ascii_case("origin")));
+    }
+
+    #[derive(Default)]
+    struct CapturedCgi {
+        referer: Option<String>,
+        origin: Option<String>,
+        cookie: Option<String>,
+        uri: String,
+        body: Value,
+    }
+
+    async fn spawn_capturing_cgi(cap: std::sync::Arc<std::sync::Mutex<CapturedCgi>>) -> String {
+        use axum::{extract::OriginalUri, http::HeaderMap, routing::post, Json, Router};
+        let app = Router::new().route(
+            "/cgi-bin/musicu.fcg",
+            post({
+                let cap = cap.clone();
+                move |headers: HeaderMap, uri: OriginalUri, Json(body): Json<Value>| {
+                    let cap = cap.clone();
+                    async move {
+                        let mut seen = cap.lock().unwrap();
+                        seen.referer = headers
+                            .get("referer")
+                            .and_then(|v| v.to_str().ok())
+                            .map(str::to_string);
+                        seen.origin = headers
+                            .get("origin")
+                            .and_then(|v| v.to_str().ok())
+                            .map(str::to_string);
+                        seen.cookie = headers
+                            .get("cookie")
+                            .and_then(|v| v.to_str().ok())
+                            .map(str::to_string);
+                        seen.uri = uri.0.to_string();
+                        seen.body = body;
+                        r#"{"code":0,"req_0":{"code":0,"data":{"lyric":"[ti:x]"}}}"#
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn request_cgi_sends_yqq_referer_and_origin() {
+        let cap = std::sync::Arc::new(std::sync::Mutex::new(CapturedCgi::default()));
+        let base = spawn_capturing_cgi(cap.clone()).await;
+        let mut ctx = ApiContext::new_with_proxy(None, Some(Platform::Web), None).unwrap();
+        ctx.cgi_base_url = format!("{base}/cgi-bin");
+        ctx.request_cgi(
+            "music.musichallSong.PlayLyricInfo",
+            "GetPlayLyricInfo",
+            json!({ "songMID": "001X" }),
+            &RequestOptions::default(),
+        )
+        .await
+        .unwrap();
+        let seen = cap.lock().unwrap();
+        assert_eq!(seen.referer.as_deref(), Some("https://y.qq.com/"));
+        assert_eq!(seen.origin.as_deref(), Some("https://y.qq.com"));
+    }
+
+    #[tokio::test]
+    async fn request_cgi_sends_credential_cookies() {
+        let cap = std::sync::Arc::new(std::sync::Mutex::new(CapturedCgi::default()));
+        let base = spawn_capturing_cgi(cap.clone()).await;
+        let mut ctx = ApiContext::new_with_proxy(None, Some(Platform::Web), None).unwrap();
+        ctx.cgi_base_url = format!("{base}/cgi-bin");
+        ctx.set_credential(Credential {
+            musicid: 10001,
+            str_musicid: "10001".into(),
+            musickey: "test-key".into(),
+            ..Default::default()
+        });
+        ctx.request_cgi(
+            "music.musichallSong.PlayLyricInfo",
+            "GetPlayLyricInfo",
+            json!({ "songMID": "001X" }),
+            &RequestOptions::default(),
+        )
+        .await
+        .unwrap();
+        let cookie = cap.lock().unwrap().cookie.clone().expect("Cookie header");
+        assert!(cookie.contains("uin=10001"), "{cookie}");
+        assert!(cookie.contains("qqmusic_uin=10001"), "{cookie}");
+        assert!(cookie.contains("qm_keyst=test-key"), "{cookie}");
+        assert!(cookie.contains("qqmusic_key=test-key"), "{cookie}");
     }
 
     #[test]

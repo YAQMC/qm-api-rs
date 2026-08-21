@@ -37,10 +37,12 @@ Client
 `Arc<dyn ApiTransport>`，不再把 `reqwest::Client` 暴露为公开发送路径。
 
 - **默认实现** `ReqwestApiTransport`：reqwest **0.12**，`gzip` / `brotli` /
-  `cookie_store(true)`（登录 cookie 依赖它）。reqwest 类型只留在私有模块。
+  `cookie_store(true)`（仅服务 ptlogin / 微信等 HTTP 登录跳转）。reqwest 类型只留在私有模块。
 - **注入**：`Client::new` / `ApiContext::new` 使用默认实现；
   `new_with_transport(Arc<dyn ApiTransport>)` 注入自定义传输；
   `new_with_transport_config(TransportConfig)` 只改超时/代理/重试而不换实现。
+  **`ApiTransport` 不必实现 cookie store**。鉴权 Cookie 与浏览器头由库写在每次
+  CGI 请求上，不假设 jar，也不假设调用方补 `Referer`。
 - **Timeout**：默认 connect **5s**、总超时 **15s**（`TransportConfig` 可改）。
   单次请求可用 `HttpOptions.timeout` 覆盖总超时（微信二维码长轮询 35s）。
 - **Allowlist**：发送前检查 host。生产 HTTPS 至少覆盖
@@ -67,12 +69,19 @@ MQTT 登录推送（`mqtt.rs`）仍走独立 WebSocket，不进入 `ApiTransport
 2. 若 `require_login`，先校验凭证。
 3. `build_api_kwargs` 构建：
    - `payload = { "comm": <comm>, "req_0": { module, method, param } }`
-   - URL：普通 `https://u.y.qq.com/cgi-bin/musicu.fcg`；
-     需要签名时 `https://u.y.qq.com/cgi-bin/musics.fcg`，并附加 `_` 与 `sign`。
-4. 发送 POST，解析响应信封（`parse_cgi_envelope`）：
+   - URL：`sign=false`（默认）走 `musicu.fcg`；`sign=true` 走 `musics.fcg` + zzc
+     （`_` 与 `sign` 查询参数）。网页歌词、多数读接口用未签名 `musicu.fcg`。
+     `get_dislike_list` 等签名读探针保持 `sign=true`。
+4. CGI 出口（`request_cgi` / `request_cgi_batch`）组头后 POST：
+   - **Cookie**：按 `Credential` 写入 `uin` / `qqmusic_uin` / `qm_keyst` /
+     `qqmusic_key`，不依赖 transport cookie jar。
+   - **Referer / Origin**：对 `u.y.qq.com` / `c.y.qq.com` / `c6.y.qq.com`
+     （本地 mock CGI 同样）在请求尚未携带时补 `Referer: https://y.qq.com/` 与
+     `Origin: https://y.qq.com`，不覆盖 ptlogin / 微信已有的 Referer。
+5. 解析响应信封（`parse_cgi_envelope`）：
    - 外层 `code != 0` → `GlobalApi`（transport 级错误）
    - 其余情况**始终**返回固定形状 `CgiReply { code, data }`，不解释业务错误码。
-5. 业务层决定如何解释 `code`：
+6. 业务层决定如何解释 `code`：
    - 普通接口经 `require_success()`：`2000` → `SignatureRequired`，`2001` → `RateLimited`，
      `1000/104401/104400` → `CredentialExpired`，其他非零 → `CgiApi`，`0` → 返回 `data`
    - 登录等接口直接读取 `code` 自行处理（如 `20276` 验证码、`20271` 验证码错误等）
@@ -86,11 +95,16 @@ MQTT 登录推送（`mqtt.rs`）仍走独立 WebSocket，不进入 `ApiTransport
 
 - **Android** (`ct=11`, `cv=14090008`)：
   `chid=10003505`, `tmeAppID=qqmusic`, `QIMEI`/`QIMEI36`（自动申请）,
-  `OpenUDID`/`udid`, `aid`, `os_ver`, `phonetype`, `devicelevel`, `rom`, 登录字段 `qq`/`authst`/`tmeLoginType`
+  `OpenUDID`/`udid`, `aid`, `os_ver`, `phonetype`, `devicelevel`, `rom`, 登录字段 `qq`/`authst`/`tmeLoginType`。
+  **登录 CGI 靠 `comm.authst`**，即使请求上没有 Cookie 也能登录。
 - **Desktop** (`ct=19`, `cv=2201`)：
-  `chid=0`, `uin`, `g_tk`（`hash33(musickey, 5381)`）, `guid`
+  `chid=0`, `uin`, `g_tk`（`hash33(musickey, 5381)`）, `guid`。comm 无 `authst`。
 - **Web** (`ct=24`, `cv=4747474`)：
-  `chid=0`, `uin`, `g_tk`/`g_tk_new_20200303`, `format=json`, `notice=0`, `need_new_code=1`
+  `chid=0`, `uin`, `g_tk`/`g_tk_new_20200303`, `format=json`, `notice=0`, `need_new_code=1`。comm 无 `authst`。
+
+**Web / Desktop 登录 CGI 必须靠 Cookie**（见上，由库写入每次 CGI）。注入
+`ApiTransport` 没有 cookie jar 时尤其如此；缺 Cookie 时这两端基本当游客。
+Client 默认平台仍是 **Android**，不因此改成 Web。
 
 ## 签名算法
 
@@ -123,7 +137,8 @@ QIMEI：
 
 ## QRC 歌词解密
 
-歌词接口返回的 `lyric`/`trans`/`roma` 字段可能经过加密：
+`get_lyric` 固定网页访客信封（Web、未签名 `musicu.fcg`）。返回的 `lyric`/`trans`/`roma`
+字段可能经过加密：
 
 1. 3DES-EDE（自定义实现，8 字节 ECB 分块，密钥 `!@#)(*$%123ZXC!@!@#)(NHL`）
 2. zlib 解压
@@ -169,7 +184,8 @@ QoS 1/2 会正确跳过 packet id；`parse_properties` 对未知属性按 MQTT 5
   `req_N` / 空 data。
 - `ApiContext::cgi_base_url` 可指向本地 mock 服务器（`context.rs` 测试内的
   axum 服务），端到端验证 `request_cgi` / `request_cgi_batch` 的 envelope 契约
-  与部分失败。mock origin 由 transport allowlist 自动放行。
+  与部分失败。mock origin 由 transport allowlist 自动放行。CGI mock 同时断言
+  默认 `Referer`/`Origin` 与 Credential Cookie。
 - `ApiTransport` 单测覆盖未知 host 拒绝、timeout、redirect 0/3 跳、取消、
   写请求不重试。
 - 模型 schema drift 测试验证字段缺失/改名时按 `#[serde(default)]` 兜底。

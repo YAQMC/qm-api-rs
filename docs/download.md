@@ -108,7 +108,8 @@ let out = qmc::decrypt_file_to(Path::new("song.mflac"), Path::new("./out"), None
 
 ## 歌词解析 (LRC / QRC)
 
-`get_lyric` 返回解密后的 LRC 文本; 需要结构化解析时使用 `qqmusic_api::lyric_parser`:
+`get_lyric` 走网页访客信封（Web、未签名 `musicu.fcg`），返回解密后的 LRC 文本;
+需要结构化解析时使用 `qqmusic_api::lyric_parser`（不是下游 UI 文档模型）:
 
 ```rust
 use qqmusic_api::lyric_parser::{Lyric, QrcLyric};
