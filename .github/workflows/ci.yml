@@ -21,6 +21,9 @@ jobs:
       - name: RustSec dependency audit
         run: |
           cargo install cargo-audit --locked
+          # Library crates commonly do not commit Cargo.lock. Generate an ephemeral
+          # lockfile so RustSec audits the dependency graph Cargo would resolve now.
+          cargo generate-lockfile
           cargo audit
       - name: No public reqwest types
         run: |
