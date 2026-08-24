@@ -294,8 +294,8 @@ fn parse_publish(kind: u8, body: &[u8]) -> Result<(MqttMessage, u8, Option<u16>)
         return Err(QmError::network("MQTT PUBLISH 使用保留的 QoS=3"));
     }
     let mut pos = 0;
-    let topic = read_string(body, &mut pos)
-        .ok_or_else(|| QmError::network("解析 MQTT 主题失败"))?;
+    let topic =
+        read_string(body, &mut pos).ok_or_else(|| QmError::network("解析 MQTT 主题失败"))?;
     let packet_id = if qos > 0 {
         let hi = *body
             .get(pos)
@@ -756,9 +756,22 @@ mod tests {
     #[test]
     fn unknown_property_type_table_matches_oasis() {
         let cases: &[(u8, usize)] = &[
-            (0x01, 1), (0x17, 1), (0x19, 1), (0x24, 1), (0x25, 1), (0x28, 1),
-            (0x29, 1), (0x2A, 1), (0x13, 2), (0x21, 2), (0x22, 2), (0x23, 2),
-            (0x02, 4), (0x11, 4), (0x18, 4), (0x27, 4),
+            (0x01, 1),
+            (0x17, 1),
+            (0x19, 1),
+            (0x24, 1),
+            (0x25, 1),
+            (0x28, 1),
+            (0x29, 1),
+            (0x2A, 1),
+            (0x13, 2),
+            (0x21, 2),
+            (0x22, 2),
+            (0x23, 2),
+            (0x02, 4),
+            (0x11, 4),
+            (0x18, 4),
+            (0x27, 4),
         ];
         for (pid, len) in cases {
             let value = vec![0xAB; *len];
@@ -791,7 +804,17 @@ mod tests {
 
     #[test]
     fn varint_roundtrip() {
-        for v in [0u64, 1, 127, 128, 300, 16_383, 16_384, 2_097_151, 268_435_455] {
+        for v in [
+            0u64,
+            1,
+            127,
+            128,
+            300,
+            16_383,
+            16_384,
+            2_097_151,
+            268_435_455,
+        ] {
             let enc = encode_varint(v);
             let mut pos = 0;
             let dec = read_varint(&enc, &mut pos).unwrap();

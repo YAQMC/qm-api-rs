@@ -90,11 +90,7 @@ impl CredentialPersist for FileCredentialPersist {
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_nanos();
-            let temp_path = parent.join(format!(
-                ".{name}.{}.{}.tmp",
-                std::process::id(),
-                nonce
-            ));
+            let temp_path = parent.join(format!(".{name}.{}.{}.tmp", std::process::id(), nonce));
 
             let result = (|| -> Result<()> {
                 let mut file = std::fs::OpenOptions::new()
@@ -366,12 +362,10 @@ impl CredentialStore {
         const MAX_CURRENT_RETRIES: usize = 4;
 
         for _ in 0..MAX_CURRENT_RETRIES {
-            let musicid = self
-                .store
-                .lock()
-                .unwrap()
-                .current
-                .ok_or_else(|| QmError::CredentialInvalid("凭证库为空, 请先 add 账号".into()))?;
+            let musicid =
+                self.store.lock().unwrap().current.ok_or_else(|| {
+                    QmError::CredentialInvalid("凭证库为空, 请先 add 账号".into())
+                })?;
 
             let effective = if self.is_expired(musicid) {
                 self.refresh(client, musicid).await?

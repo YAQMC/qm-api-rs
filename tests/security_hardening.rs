@@ -18,9 +18,12 @@ struct TransportRequestSnapshot {
 #[async_trait]
 impl ApiTransport for CaptureTransport {
     async fn execute(&self, request: TransportRequest) -> Result<TransportResponse> {
-        self.requests.lock().unwrap().push(TransportRequestSnapshot {
-            headers: request.headers.clone(),
-        });
+        self.requests
+            .lock()
+            .unwrap()
+            .push(TransportRequestSnapshot {
+                headers: request.headers.clone(),
+            });
         Ok(TransportResponse {
             status: 200,
             final_url: request.url,
@@ -62,7 +65,10 @@ async fn generic_http_none_credential_is_anonymous() {
 
     let requests = transport.requests.lock().unwrap();
     let cookie = cookie_header(&requests[0].headers);
-    assert!(cookie.is_none(), "global credential leaked into generic HTTP: {cookie:?}");
+    assert!(
+        cookie.is_none(),
+        "global credential leaked into generic HTTP: {cookie:?}"
+    );
 }
 
 #[tokio::test]

@@ -227,7 +227,8 @@ fn is_loopback_host(host: &str) -> bool {
 pub(crate) fn parse_origin_input(s: &str) -> Option<String> {
     let url = url::Url::parse(s).ok()?;
     let host = url.host_str()?;
-    let allowed_scheme = url.scheme() == "https" || (url.scheme() == "http" && is_loopback_host(host));
+    let allowed_scheme =
+        url.scheme() == "https" || (url.scheme() == "http" && is_loopback_host(host));
     if !allowed_scheme {
         return None;
     }

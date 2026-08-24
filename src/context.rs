@@ -664,10 +664,7 @@ impl ApiContext {
 
         // 每个 CGI 请求只在入口读取一次全局账号. 后续 build_comm/session/Cookie 都绑定
         // 同一不可变凭证快照, 避免并发 set_credential 导致跨账号 TOCTOU.
-        let effective_credential = opts
-            .credential
-            .clone()
-            .unwrap_or_else(|| self.credential());
+        let effective_credential = opts.credential.clone().unwrap_or_else(|| self.credential());
         if opts.require_login
             && (effective_credential.musicid == 0 || effective_credential.musickey.is_empty())
         {
@@ -726,10 +723,7 @@ impl ApiContext {
         }
         self.limiter.acquire().await;
 
-        let effective_credential = opts
-            .credential
-            .clone()
-            .unwrap_or_else(|| self.credential());
+        let effective_credential = opts.credential.clone().unwrap_or_else(|| self.credential());
         if opts.require_login
             && (effective_credential.musicid == 0 || effective_credential.musickey.is_empty())
         {
@@ -1603,7 +1597,10 @@ mod tests {
         assert_eq!(ctx.qimei(), Some(("q16-d1".into(), "q36-d1".into())));
         assert_ne!(ctx.qimei(), Some(("q16-d0".into(), "q36-d0".into())));
         assert_eq!(ctx.device().android_id, "aid-d1");
-        assert!(hits.load(AOrd::SeqCst) >= 2, "stale result must trigger retry");
+        assert!(
+            hits.load(AOrd::SeqCst) >= 2,
+            "stale result must trigger retry"
+        );
     }
 
     #[tokio::test]
