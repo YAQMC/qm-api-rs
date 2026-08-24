@@ -64,39 +64,28 @@ impl fmt::Debug for HttpBody {
 /// 登录写与状态改变必须使用 [`RetryClass::Write`], 默认不重试.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RetryClass {
-    /// 幂等读. 可重试网络抖动与 5xx/429.
     #[default]
     SafeRead,
-    /// 登录轮询 (含微信长轮询). 超时是有意义的信号, 不自动重试.
     AuthPoll,
-    /// 状态改变 / 登录写. 默认不重试.
     Write,
 }
 
 /// 重定向策略.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RedirectMode {
-    /// 校验 allowlist 后跟随, 最多 [`TransportConfig::max_redirects`] 跳 (默认 3).
     #[default]
     FollowValidated,
-    /// 不跟随, 把 30x 当作最终响应返回 (二维码 / cookie 交换).
     None,
 }
 
 /// 默认 transport 的可配置项.
 #[derive(Debug, Clone)]
 pub struct TransportConfig {
-    /// 连接超时. 默认 5s.
     pub connect_timeout: Duration,
-    /// 单次请求总超时 (可被请求级 `timeout` 覆盖). 默认 15s.
     pub total_timeout: Duration,
-    /// [`RedirectMode::FollowValidated`] 最多跟随跳数. 默认 3.
     pub max_redirects: usize,
-    /// [`RetryClass::SafeRead`] 的额外尝试次数 (不含首次). 默认 1.
     pub retry_max: u32,
-    /// 重试间隔. 默认 250ms.
     pub retry_delay: Duration,
-    /// HTTP 代理, 如 `http://127.0.0.1:7890`.
     pub proxy: Option<String>,
 }
 
@@ -120,11 +109,9 @@ pub struct TransportRequest {
     pub headers: Vec<(String, String)>,
     pub query: Vec<(String, String)>,
     pub body: HttpBody,
-    /// 覆盖 [`TransportConfig::total_timeout`]; `None` 使用配置默认值.
     pub timeout: Option<Duration>,
     pub retry: RetryClass,
     pub redirects: RedirectMode,
-    /// 见模块文档: `tokio-util::sync::CancellationToken`.
     pub cancellation: CancellationToken,
 }
 
@@ -190,26 +177,18 @@ impl TransportResponse {
     }
 }
 
-/// 可注入的 HTTP 传输.
-///
-/// `Client::new` / `ApiContext::new` 使用 [`ReqwestApiTransport`].
-/// 下游可通过 `new_with_transport` 注入 `Arc<dyn ApiTransport>`.
-///
-/// 实现不必维护 cookie store: CGI 的 `Cookie` / `Referer` / `Origin` 已由库填好.
 #[async_trait::async_trait]
 pub trait ApiTransport: Send + Sync {
     async fn execute(&self, request: TransportRequest) -> Result<TransportResponse>;
 
     /// 放行额外 origin (完整 URL 或 `scheme://host[:port]`).
     ///
-    /// 默认 transport 用它放行测试里指向 mock 的 `cgi_base_url` / `qimei_url`.
-    /// 自定义实现可忽略.
+    /// 默认 transport 仅接受 HTTPS, 或用于本地测试的 loopback HTTP origin.
     fn allow_origin(&self, origin: &str) {
         let _ = origin;
     }
 }
 
-/// 生产 HTTPS 主机 (精确匹配).
 const PRODUCTION_HOSTS: &[&str] = &[
     "u.y.qq.com",
     "c.y.qq.com",
@@ -236,9 +215,22 @@ pub(crate) fn origin_of(url: &url::Url) -> String {
     }
 }
 
+fn is_loopback_host(host: &str) -> bool {
+    matches!(host, "localhost" | "127.0.0.1" | "::1")
+}
+
+/// Parse an extra trusted origin.
+///
+/// Production-style extra origins must use HTTPS. Plain HTTP is accepted only for loopback
+/// addresses so local mock servers and development harnesses continue to work without silently
+/// expanding the production trust boundary to arbitrary cleartext origins.
 pub(crate) fn parse_origin_input(s: &str) -> Option<String> {
     let url = url::Url::parse(s).ok()?;
-    url.host_str()?;
+    let host = url.host_str()?;
+    let allowed_scheme = url.scheme() == "https" || (url.scheme() == "http" && is_loopback_host(host));
+    if !allowed_scheme {
+        return None;
+    }
     Some(origin_of(&url))
 }
 
@@ -323,6 +315,24 @@ mod tests {
         let t = ReqwestApiTransport::new(config).unwrap();
         t.allow_origin(base);
         t
+    }
+
+    #[test]
+    fn configured_origin_requires_https_except_loopback() {
+        assert_eq!(
+            parse_origin_input("https://api.example.test/path").as_deref(),
+            Some("https://api.example.test")
+        );
+        assert!(parse_origin_input("http://api.example.test/path").is_none());
+        assert!(parse_origin_input("ftp://api.example.test/path").is_none());
+        assert_eq!(
+            parse_origin_input("http://127.0.0.1:18080/path").as_deref(),
+            Some("http://127.0.0.1:18080")
+        );
+        assert_eq!(
+            parse_origin_input("http://localhost:18080/path").as_deref(),
+            Some("http://localhost:18080")
+        );
     }
 
     #[tokio::test]
