@@ -497,7 +497,10 @@ impl ApiContext {
         Ok(qimei::parse_qimei_response(&text))
     }
 
-    /// 为 HTTP 请求准备 kwargs (注入 Cookies 与 User-Agent).
+    /// 为 HTTP 请求准备 kwargs (显式注入 Cookies 与 User-Agent).
+    ///
+    /// 安全语义: `credential == None` 表示匿名请求, **不会**回退到全局账号凭证.
+    /// CGI 调用方若需要默认账号, 必须在请求入口先快照全局凭证再显式传入.
     #[allow(clippy::type_complexity)]
     pub fn prepare_http_kwargs(
         &self,
@@ -505,15 +508,16 @@ impl ApiContext {
         mut headers: Vec<(String, String)>,
         mut cookies: Vec<(String, String)>,
     ) -> (Vec<(String, String)>, Vec<(String, String)>) {
-        let cred = credential.cloned().unwrap_or_else(|| self.credential());
-        let str_musicid = cred.str_musicid();
-        if !str_musicid.is_empty() {
-            cookies.push(("uin".into(), str_musicid.clone()));
-            cookies.push(("qqmusic_uin".into(), str_musicid));
-        }
-        if !cred.musickey.is_empty() {
-            cookies.push(("qm_keyst".into(), cred.musickey.clone()));
-            cookies.push(("qqmusic_key".into(), cred.musickey));
+        if let Some(cred) = credential {
+            let str_musicid = cred.str_musicid();
+            if !str_musicid.is_empty() {
+                cookies.push(("uin".into(), str_musicid.clone()));
+                cookies.push(("qqmusic_uin".into(), str_musicid));
+            }
+            if !cred.musickey.is_empty() {
+                cookies.push(("qm_keyst".into(), cred.musickey.clone()));
+                cookies.push(("qqmusic_key".into(), cred.musickey.clone()));
+            }
         }
         if !headers
             .iter()
@@ -557,7 +561,8 @@ impl ApiContext {
         let target_platform = platform.unwrap_or(self.platform);
         for _ in 0..MAX_DEVICE_RETRIES {
             let snap = self.device_snapshot();
-            // 先确定本次请求生效的账号, 并取得与该账号原子一致的 session 快照.
+            // 直接调用 build_api_kwargs 时仍保留 `None => 当前全局凭证` 的 CGI builder
+            // 兼容语义; request_cgi/request_cgi_batch 会在入口快照后显式传入凭证.
             let cred = credential.cloned().unwrap_or_else(|| self.credential());
             let android_session = if target_platform == Platform::Android {
                 Some(self.session_for(target_platform, &cred).await?)
@@ -656,13 +661,19 @@ impl ApiContext {
         opts: &RequestOptions,
     ) -> Result<CgiReply<Value>> {
         self.limiter.acquire().await;
-        if opts.require_login {
-            let cred = opts.credential.clone().unwrap_or_else(|| self.credential());
-            if cred.musicid == 0 || cred.musickey.is_empty() {
-                return Err(QmError::CredentialInvalid(
-                    "请求需要登录, 未提供有效的登录凭证".into(),
-                ));
-            }
+
+        // 每个 CGI 请求只在入口读取一次全局账号. 后续 build_comm/session/Cookie 都绑定
+        // 同一不可变凭证快照, 避免并发 set_credential 导致跨账号 TOCTOU.
+        let effective_credential = opts
+            .credential
+            .clone()
+            .unwrap_or_else(|| self.credential());
+        if opts.require_login
+            && (effective_credential.musicid == 0 || effective_credential.musickey.is_empty())
+        {
+            return Err(QmError::CredentialInvalid(
+                "请求需要登录, 未提供有效的登录凭证".into(),
+            ));
         }
 
         let param = if opts.preserve_bool {
@@ -676,14 +687,14 @@ impl ApiContext {
             .build_api_kwargs(
                 &[req],
                 opts.comm.clone(),
-                opts.credential.as_ref(),
+                Some(&effective_credential),
                 opts.platform,
                 opts.override_comm,
                 opts.sign,
             )
             .await?;
 
-        let headers = self.cgi_headers(&url, user_agent, opts.credential.as_ref());
+        let headers = self.cgi_headers(&url, user_agent, Some(&effective_credential));
         let mut request = TransportRequest::new(HttpMethod::Post, url);
         request.headers = headers;
         request.query = query_params;
@@ -714,13 +725,17 @@ impl ApiContext {
             return Ok(Vec::new());
         }
         self.limiter.acquire().await;
-        if opts.require_login {
-            let cred = opts.credential.clone().unwrap_or_else(|| self.credential());
-            if cred.musicid == 0 || cred.musickey.is_empty() {
-                return Err(QmError::CredentialInvalid(
-                    "请求需要登录, 未提供有效的登录凭证".into(),
-                ));
-            }
+
+        let effective_credential = opts
+            .credential
+            .clone()
+            .unwrap_or_else(|| self.credential());
+        if opts.require_login
+            && (effective_credential.musicid == 0 || effective_credential.musickey.is_empty())
+        {
+            return Err(QmError::CredentialInvalid(
+                "请求需要登录, 未提供有效的登录凭证".into(),
+            ));
         }
 
         let mut data = Vec::with_capacity(requests.len());
@@ -737,14 +752,14 @@ impl ApiContext {
             .build_api_kwargs(
                 &data,
                 opts.comm.clone(),
-                opts.credential.as_ref(),
+                Some(&effective_credential),
                 opts.platform,
                 opts.override_comm,
                 opts.sign,
             )
             .await?;
 
-        let headers = self.cgi_headers(&url, user_agent, opts.credential.as_ref());
+        let headers = self.cgi_headers(&url, user_agent, Some(&effective_credential));
         let mut request = TransportRequest::new(HttpMethod::Post, url);
         request.headers = headers;
         request.query = query_params;
@@ -796,6 +811,8 @@ impl ApiContext {
     }
 
     /// 下载原始字节 (用于音频文件下载).
+    ///
+    /// `credential == None` 表示匿名下载; 不会读取全局账号凭证.
     pub async fn request_http_bytes(
         &self,
         url: &str,
@@ -814,6 +831,8 @@ impl ApiContext {
     }
 
     /// 执行标准 HTTP 请求, 返回完整响应 (含状态码 / 最终 URL / 头 / 体).
+    ///
+    /// `opts.credential == None` 表示匿名请求; 不会读取全局账号凭证.
     pub async fn request_http_raw(
         &self,
         method: HttpMethod,
@@ -966,7 +985,6 @@ mod tests {
 
     #[test]
     fn parse_envelope_preserves_business_error_code() {
-        // 登录错误码 20271 必须原样保留, 不能吞掉.
         let text = r#"{"code":0,"req_0":{"code":20271,"data":{"message":"验证码错误"}}}"#;
         let reply = parse_cgi_envelope(text, 0).unwrap();
         assert_eq!(reply.code, 20271);
@@ -1077,11 +1095,40 @@ mod tests {
         assert!(reply.data.is_null());
     }
 
+    #[test]
+    fn generic_http_none_does_not_inherit_global_credential() {
+        let ctx = ApiContext::new_with_proxy(None, Some(Platform::Web), None).unwrap();
+        ctx.set_credential(Credential {
+            musicid: 10001,
+            str_musicid: "10001".into(),
+            musickey: "secret-key".into(),
+            ..Default::default()
+        });
+        let (_headers, cookies) = ctx.prepare_http_kwargs(None, Vec::new(), Vec::new());
+        assert!(cookies.is_empty());
+    }
+
+    #[test]
+    fn generic_http_explicit_credential_still_adds_cookies() {
+        let ctx = ApiContext::new_with_proxy(None, Some(Platform::Web), None).unwrap();
+        let credential = Credential {
+            musicid: 10001,
+            str_musicid: "10001".into(),
+            musickey: "secret-key".into(),
+            ..Default::default()
+        };
+        let (_headers, cookies) =
+            ctx.prepare_http_kwargs(Some(&credential), Vec::new(), Vec::new());
+        assert!(cookies.iter().any(|(k, v)| k == "uin" && v == "10001"));
+        assert!(cookies
+            .iter()
+            .any(|(k, v)| k == "qm_keyst" && v == "secret-key"));
+    }
+
     // ------------------------------------------------------------------
     // contract test harness: 本地 mock MusicU 服务器 + 状态缓存并发.
     // ------------------------------------------------------------------
 
-    /// 启动一个本地 mock 服务器, 返回其地址.
     async fn spawn_mock(base_route: &'static str, handler: axum::routing::MethodRouter) -> String {
         use axum::Router;
         let app = Router::new().route(base_route, handler);
@@ -1137,7 +1184,6 @@ mod tests {
             )
             .await
             .unwrap();
-        // transport 不吞掉业务错误码.
         assert_eq!(reply.code, 104400);
         assert!(matches!(
             reply.require_success(),
@@ -1301,7 +1347,6 @@ mod tests {
 
     #[test]
     fn model_schema_drift_uses_defaults() {
-        // 曲谱接口字段名变化 / 缺失时, 模型使用默认值而非报错或静默错位.
         let drift = serde_json::json!({ "result": null, "totalMap": {} });
         let parsed: crate::models::song::GetSheetResponse = serde_json::from_value(drift).unwrap();
         assert!(parsed.result.is_empty());
@@ -1318,7 +1363,6 @@ mod tests {
 
         let q = ctx.get_cached_qimei().await.unwrap();
         assert_eq!(q, Some(("q16".into(), "q36".into())));
-        // 缓存未变, 不应重新申请.
         assert_eq!(ctx.qimei(), Some(("q16".into(), "q36".into())));
     }
 
@@ -1344,7 +1388,6 @@ mod tests {
         cred.str_musicid = "42".into();
 
         let s1 = ctx.session_for(Platform::Android, &cred).await.unwrap();
-        // 同一账号二次获取 → 命中 per-account 缓存, 仍返回同一 uid/sid.
         let s2 = ctx.session_for(Platform::Android, &cred).await.unwrap();
         assert_eq!(s1.uid, s2.uid);
         assert_eq!(s1.uid, "u1");
@@ -1353,7 +1396,6 @@ mod tests {
     #[tokio::test]
     async fn session_cached_per_account() {
         use axum::routing::post;
-        // mock 按账号返回不同 session.
         let base = spawn_mock(
             "/cgi-bin/musicu.fcg",
             post(|| async {
@@ -1368,21 +1410,18 @@ mod tests {
         ctx.cgi_base_url = format!("{base}/cgi-bin");
         ctx.qimei_url = format!("{base2}/tme/trpc/proxy");
 
-        // 账号 A.
         let mut cred_a = Credential::default();
         cred_a.musicid = 111;
         cred_a.str_musicid = "111".into();
         let a = ctx.session_for(Platform::Android, &cred_a).await.unwrap();
         assert_eq!(a.uid, "new-uid");
 
-        // 账号 B (不同 musicid) → 必须各自持有自己的 session, 不共享单例.
         let mut cred_b = Credential::default();
         cred_b.musicid = 222;
         cred_b.str_musicid = "222".into();
         let b = ctx.session_for(Platform::Android, &cred_b).await.unwrap();
         assert_eq!(b.uid, "new-uid");
 
-        // 再取 A → 缓存命中, 仍返回 A 的 session (不会读到 B).
         let a2 = ctx.session_for(Platform::Android, &cred_a).await.unwrap();
         assert_eq!(a2.uid, a.uid);
     }
@@ -1413,7 +1452,6 @@ mod tests {
     async fn session_for_singleflight_does_not_deadlock() {
         use axum::routing::post;
         use tokio::time::Duration;
-        // 两个 mock: session (cgi) 与 qimei, 均为空缓存 → 走完整 singleflight 路径.
         let base = spawn_mock(
             "/cgi-bin/musicu.fcg",
             post(|| async {
@@ -1432,7 +1470,6 @@ mod tests {
         cred.musicid = 7;
         cred.str_musicid = "7".into();
 
-        // 若 session_for 内重复加锁会死锁, 此处 5s 超时会失败.
         let result = tokio::time::timeout(
             Duration::from_secs(5),
             ctx.session_for(Platform::Android, &cred),
@@ -1470,13 +1507,12 @@ mod tests {
         let s1 = ctx.session_for(Platform::Android, &cred).await.unwrap();
         assert_eq!(s1.uid, "u1");
 
-        // 更换设备身份 → epoch 递增 → 原缓存失效, 下次重新申请.
         let epoch_before = ctx.device_epoch.load(AOrdering::Relaxed);
         ctx.set_device(Device::random());
         assert_eq!(ctx.device_epoch.load(AOrdering::Relaxed), epoch_before + 1);
 
         let s2 = ctx.session_for(Platform::Android, &cred).await.unwrap();
-        assert_eq!(s2.uid, "u1"); // mock 恒定返回, 但确实重新申请 (epoch 已变).
+        assert_eq!(s2.uid, "u1");
         assert_ne!(s1.device_epoch, s2.device_epoch);
     }
 
@@ -1504,7 +1540,6 @@ mod tests {
         format!("http://{addr}")
     }
 
-    /// Test A: D0 QIMEI 已发出 → set_device(D1) → 释放 D0 响应 → D0 QIMEI 不得写入 D1.
     #[tokio::test]
     async fn stale_qimei_is_not_committed_after_set_device() {
         use axum::routing::post;
@@ -1568,13 +1603,9 @@ mod tests {
         assert_eq!(ctx.qimei(), Some(("q16-d1".into(), "q36-d1".into())));
         assert_ne!(ctx.qimei(), Some(("q16-d0".into(), "q36-d0".into())));
         assert_eq!(ctx.device().android_id, "aid-d1");
-        assert!(
-            hits.load(AOrd::SeqCst) >= 2,
-            "stale result must trigger retry"
-        );
+        assert!(hits.load(AOrd::SeqCst) >= 2, "stale result must trigger retry");
     }
 
-    /// Test B: GetSession(D0) in-flight → set_device(D1) → 旧 session 不得缓存为 D1.
     #[tokio::test]
     async fn stale_session_is_not_cached_for_new_device() {
         use axum::routing::post;
@@ -1641,7 +1672,6 @@ mod tests {
         assert!(hits.load(AOrd::SeqCst) >= 2);
     }
 
-    /// Test C: Device 在 build_api_kwargs 期间被替换 → 最终 comm 必须是同一 snapshot.
     #[tokio::test]
     async fn build_api_kwargs_retries_for_coherent_device_snapshot() {
         use axum::routing::post;
