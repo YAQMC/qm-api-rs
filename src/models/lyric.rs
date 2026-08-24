@@ -174,5 +174,5 @@ pub struct AIDictItem {
 #[serde(default)]
 pub struct GetAIDictResponse {
     #[serde(alias = "dictList")]
-    pub dict_list: Vec<MultiStyleLyricItem>,
+    pub dict_list: Vec<AIDictItem>,
 }
