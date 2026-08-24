@@ -75,7 +75,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await
     {
         Ok((quality, urls)) => {
-            println!("最高音质: {:?}", quality);
+            println!("最高音质: {quality:?}");
             for item in urls.data.iter().take(2) {
                 println!(
                     "  filename={} result={} purl.len={} ekey.len={}",
