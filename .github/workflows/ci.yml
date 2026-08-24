@@ -5,19 +5,39 @@ on:
   pull_request:
 
 jobs:
-  test:
+  format:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.88.0
         with:
-          components: rustfmt, clippy
+          components: rustfmt
       - name: Format
         run: cargo fmt --check
+
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88.0
+        with:
+          components: clippy
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88.0
       - name: Test
         run: cargo test --all-features
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88.0
       - name: RustSec dependency audit
         run: |
           cargo install cargo-audit --locked
@@ -25,6 +45,11 @@ jobs:
           # lockfile so RustSec audits the dependency graph Cargo would resolve now.
           cargo generate-lockfile
           cargo audit
+
+  api-boundary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
       - name: No public reqwest types
         run: |
           if grep -REn 'pub[[:space:]].*(reqwest::(Client|Method|header::|Response|Error|Url|Proxy))' src; then
