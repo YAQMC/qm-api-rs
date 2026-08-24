@@ -7,6 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -36,7 +37,8 @@ pub trait CredentialPersist: Send + Sync + std::fmt::Debug {
 
 /// 明文 JSON 文件后端 (仅开发环境).
 ///
-/// 凭证以明文 JSON 落盘, **不应**用于生产环境的账号存储.
+/// 凭证以明文 JSON 落盘, **不应**用于生产环境的账号存储. 在 Unix 上本实现会
+/// 强制文件权限为 `0600`, 这只能降低同机其他用户误读风险, **不等于加密存储**.
 #[derive(Debug, Clone)]
 pub struct FileCredentialPersist {
     path: std::path::PathBuf,
@@ -69,7 +71,29 @@ impl CredentialPersist for FileCredentialPersist {
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(&self.path, data).map_err(QmError::from)
+
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+
+        let mut file = options.open(&self.path).map_err(QmError::from)?;
+
+        // `mode(0600)` only applies when creating a new file. Existing files may have been
+        // created by an older version with a wider umask-derived mode, so tighten them too.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))
+                .map_err(QmError::from)?;
+        }
+
+        file.write_all(data.as_bytes()).map_err(QmError::from)?;
+        file.sync_all().map_err(QmError::from)
     }
 }
 
@@ -107,6 +131,9 @@ impl CredentialStore {
     }
 
     /// 从文件加载凭证库 (同时使用该文件作为持久化后端).
+    ///
+    /// 此接口使用明文 JSON 文件后端, 仅适合开发/受控环境. 生产环境应使用
+    /// [`CredentialStore::from_backend`] + 系统安全存储实现.
     pub fn load(path: &Path) -> Result<Self> {
         Self::from_backend(FileCredentialPersist::new(path))
     }
@@ -135,7 +162,7 @@ impl CredentialStore {
 
     /// 设置明文文件持久化后端 (后续 `save` 自动写入).
     ///
-    /// 注意: 明文 JSON 仅适合开发环境.
+    /// 注意: 明文 JSON 仅适合开发环境; 生产环境请使用 [`Self::with_backend`].
     pub fn with_path(mut self, path: &Path) -> Self {
         self.backend = Some(Box::new(FileCredentialPersist::new(path)));
         self
@@ -231,7 +258,6 @@ impl CredentialStore {
                 .clone()
         };
         let _guard = lock.lock().await;
-        // 锁内复查: 已被其他任务刷新则直接返回.
         if !self.is_expired(musicid) {
             return self
                 .get(musicid)
@@ -246,14 +272,11 @@ impl CredentialStore {
             store.accounts.insert(musicid, refreshed.clone());
         }
         self.persist()?;
-        // 凭证已刷新: 使该账号的 Android session 失效 (旧鉴权下申请的 session 保守作废).
         client.context().invalidate_session(musicid).await;
         Ok(refreshed)
     }
 
     /// 确保当前凭证有效: 过期时自动刷新, 并将生效凭证同步回 `client`.
-    ///
-    /// 返回当前有效凭证; 无账号或刷新失败时返回错误.
     pub async fn ensure_current(&self, client: &Client) -> Result<Credential> {
         let musicid = self
             .store
@@ -267,8 +290,6 @@ impl CredentialStore {
             self.get(musicid)
                 .ok_or_else(|| QmError::CredentialInvalid(format!("账号 {musicid} 不存在")))?
         };
-        // 保证 Client 与 Store 同步: 刷新后立即把新凭证写回 Client,
-        // 避免后续未显式传 credential 的 API 继续使用旧 token.
         client.set_credential(effective.clone());
         Ok(effective)
     }
@@ -312,12 +333,17 @@ mod tests {
         store.add(cred.clone()).unwrap();
         assert_eq!(store.current().map(|c| c.musicid), Some(10001));
 
-        // 重新加载.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+
         let loaded = CredentialStore::load(&dir).unwrap();
         assert_eq!(loaded.get(10001).map(|c| c.musickey), Some("key-1".into()));
         assert_eq!(loaded.current().map(|c| c.musicid), Some(10001));
 
-        // 多账号.
         let cred2 = Credential {
             musicid: 20002,
             str_musicid: "20002".into(),
@@ -347,9 +373,7 @@ mod tests {
             ..Default::default()
         };
         store.add(cred).unwrap();
-        // create=1, expires=5 -> 早已过期.
         assert!(store.is_expired(1));
-        // key_expires_in=0 视为无过期信息, 不算过期.
         let cred2 = Credential {
             musicid: 2,
             str_musicid: "2".into(),
@@ -374,11 +398,8 @@ mod tests {
                 ..Default::default()
             })
             .unwrap();
-        // 数据写入后端 (而非文件).
         let data = backend.inner.lock().unwrap().clone().unwrap();
         assert!(data.contains("secret"));
-
-        // 从后端数据恢复.
         let loaded = CredentialStore::from_backend(backend).unwrap();
         assert_eq!(loaded.get(7).map(|c| c.musickey), Some("secret".into()));
     }
@@ -386,28 +407,15 @@ mod tests {
     #[test]
     fn account_ids_are_stable_sorted() {
         let store = CredentialStore::new();
-        store
-            .add(Credential {
-                musicid: 300,
-                str_musicid: "300".into(),
-                ..Default::default()
-            })
-            .unwrap();
-        store
-            .add(Credential {
-                musicid: 1,
-                str_musicid: "1".into(),
-                ..Default::default()
-            })
-            .unwrap();
-        store
-            .add(Credential {
-                musicid: 200,
-                str_musicid: "200".into(),
-                ..Default::default()
-            })
-            .unwrap();
-        // 底层为 BTreeMap, 迭代顺序确定 (升序), 不依赖插入顺序.
+        for id in [300, 1, 200] {
+            store
+                .add(Credential {
+                    musicid: id,
+                    str_musicid: id.to_string(),
+                    ..Default::default()
+                })
+                .unwrap();
+        }
         assert_eq!(store.account_ids(), vec![1, 200, 300]);
     }
 
@@ -424,14 +432,12 @@ mod tests {
         store.add(cred).unwrap();
 
         let client = crate::Client::new(None, None).unwrap();
-        // 未过期路径: ensure_current 也把生效凭证写回 Client.
         let effective = store.ensure_current(&client).await.unwrap();
         assert_eq!(effective.musicid, 9);
         assert_eq!(client.credential().musicid, 9);
         assert_eq!(client.credential().musickey, "k9");
     }
 
-    /// 内存后端 (测试用).
     #[derive(Debug, Clone, Default)]
     struct InMemoryBackend {
         inner: std::sync::Arc<Mutex<Option<String>>>,
