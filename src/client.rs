@@ -78,7 +78,11 @@ impl From<&CgiOptions> for crate::context::RequestOptions {
 }
 
 /// HTTP 请求选项.
-#[derive(Debug, Clone)]
+///
+/// 与 CGI 请求不同, 通用 HTTP 请求在未显式提供 `credential` 时按匿名请求处理,
+/// 不会自动继承 [`Client`] 的全局账号凭证. 需要鉴权时请显式设置
+/// `credential: Some(...)`.
+#[derive(Clone)]
 pub struct HttpOptions {
     pub params: Vec<(String, String)>,
     /// 普通 header 列表, 不含 `reqwest::header::HeaderMap`.
@@ -88,12 +92,35 @@ pub struct HttpOptions {
     pub data: Option<Value>,
     /// 原始字节体 (JSON / form 优先).
     pub body: Option<Vec<u8>>,
+    /// 通用 HTTP 请求的显式凭证. `None` 表示匿名, 不继承全局凭证.
     pub credential: Option<Credential>,
     /// 覆盖默认总超时 (connect 超时仍由 transport 配置决定).
     pub timeout: Option<Duration>,
     pub retry: RetryClass,
     pub redirects: RedirectMode,
     pub cancellation: CancellationToken,
+}
+
+impl std::fmt::Debug for HttpOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let param_keys: Vec<&str> = self.params.iter().map(|(key, _)| key.as_str()).collect();
+        let header_names: Vec<&str> = self.headers.iter().map(|(key, _)| key.as_str()).collect();
+        let cookie_names: Vec<&str> = self.cookies.iter().map(|(key, _)| key.as_str()).collect();
+        let body_len = self.body.as_ref().map(Vec::len);
+
+        f.debug_struct("HttpOptions")
+            .field("param_keys", &param_keys)
+            .field("header_names", &header_names)
+            .field("cookie_names", &cookie_names)
+            .field("has_json", &self.json.is_some())
+            .field("has_data", &self.data.is_some())
+            .field("body_len", &body_len)
+            .field("credential", &self.credential)
+            .field("timeout", &self.timeout)
+            .field("retry", &self.retry)
+            .field("redirects", &self.redirects)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Default for HttpOptions {
@@ -297,13 +324,21 @@ impl Client {
     }
 
     /// 执行一个标准 HTTP 请求, 返回原始响应文本.
+    ///
+    /// 安全默认: `opts.credential == None` 时发送匿名请求, 不继承全局凭证.
     pub async fn request_http(
         &self,
         method: HttpMethod,
         url: &str,
         opts: &HttpOptions,
     ) -> Result<String> {
-        self.context.request_http(method, url, opts).await
+        let mut safe_opts = opts.clone();
+        if safe_opts.credential.is_none() {
+            // `ApiContext` 仍为 CGI 保留 `None => global credential` 的历史语义.
+            // 通用 HTTP 边界显式传入空凭证, 阻止隐式账号 Cookie 传播.
+            safe_opts.credential = Some(Credential::default());
+        }
+        self.context.request_http(method, url, &safe_opts).await
     }
 
     /// 执行 HTTP 请求并反序列化.
@@ -318,7 +353,16 @@ impl Client {
     }
 
     /// 下载原始字节 (用于音频文件下载).
+    ///
+    /// 安全默认: `credential == None` 表示匿名下载. 如确需账号 Cookie, 必须显式
+    /// 传入凭证, 例如先读取 `let cred = client.credential()` 再传 `Some(&cred)`.
     pub async fn download(&self, url: &str, credential: Option<&Credential>) -> Result<Vec<u8>> {
-        self.context.request_http_bytes(url, credential).await
+        match credential {
+            Some(credential) => self.context.request_http_bytes(url, Some(credential)).await,
+            None => {
+                let anonymous = Credential::default();
+                self.context.request_http_bytes(url, Some(&anonymous)).await
+            }
+        }
     }
 }
