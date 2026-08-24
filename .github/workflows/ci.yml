@@ -18,6 +18,10 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
       - name: Test
         run: cargo test --all-features
+      - name: RustSec dependency audit
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit
       - name: No public reqwest types
         run: |
           if grep -REn 'pub[[:space:]].*(reqwest::(Client|Method|header::|Response|Error|Url|Proxy))' src; then
