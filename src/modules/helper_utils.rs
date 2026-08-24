@@ -102,9 +102,10 @@ impl UploadFileSession {
 
     /// 准备上传, 获取或复用有效的临时凭证 (按文件 SHA1 去重).
     ///
-    /// 单独调用 `prepare()` 只更新缓存; 完整上传应使用 [`Self::upload`], 后者会持有
-    /// session 级事务锁直到 `FinishUpload` 完成，防止计划被另一并发上传覆盖。
+    /// `prepare()` 与完整 [`Self::upload`] 共用同一把 session 级事务锁，因此外部
+    /// prepare 也不能在正在进行的上传中途覆盖共享计划。
     pub async fn prepare(&self, file_paths: &[PathBuf]) -> Result<()> {
+        let _upload_guard = self.upload_lock.lock().await;
         self.prepare_inner(file_paths).await
     }
 
