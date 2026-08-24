@@ -25,6 +25,12 @@ pub struct UploadFileSession {
     pub max_concurrency: usize,
     init_data: Mutex<Option<InitUploadResponse>>,
     last_file_shas: Mutex<Option<Vec<String>>>,
+    /// 同一 session 的 prepare -> COS PUT -> FinishUpload 必须作为不可交错事务执行.
+    ///
+    /// `init_data` 是会话级缓存; 若两个 `upload()` 并发执行而仅分别锁读写缓存,
+    /// 后一个 prepare 可覆盖前一个上传正在消费的计划, 导致 bucket/object key/COS
+    /// 临时密钥串单。这里使用 async mutex 覆盖整个 upload 生命周期来阻断该竞态。
+    upload_lock: tokio::sync::Mutex<()>,
 }
 
 impl std::fmt::Debug for UploadFileSession {
@@ -45,6 +51,7 @@ impl UploadFileSession {
             max_concurrency: 3,
             init_data: Mutex::new(None),
             last_file_shas: Mutex::new(None),
+            upload_lock: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -94,7 +101,15 @@ impl UploadFileSession {
     }
 
     /// 准备上传, 获取或复用有效的临时凭证 (按文件 SHA1 去重).
+    ///
+    /// `prepare()` 与完整 [`Self::upload`] 共用同一把 session 级事务锁，因此外部
+    /// prepare 也不能在正在进行的上传中途覆盖共享计划。
     pub async fn prepare(&self, file_paths: &[PathBuf]) -> Result<()> {
+        let _upload_guard = self.upload_lock.lock().await;
+        self.prepare_inner(file_paths).await
+    }
+
+    async fn prepare_inner(&self, file_paths: &[PathBuf]) -> Result<()> {
         if file_paths.is_empty() {
             return Err(QmError::ValueError("至少需要提供一个文件路径".into()));
         }
@@ -115,7 +130,6 @@ impl UploadFileSession {
             let init = self.init_data.lock().unwrap();
             if let Some(data) = init.as_ref() {
                 let now = now_secs();
-                // 留 10 分钟余量防止临界过期
                 if now < data.auth_info.expired_time - 600 {
                     return Ok(());
                 }
@@ -132,12 +146,16 @@ impl UploadFileSession {
 
     /// 执行多文件的完整上传流程.
     ///
-    /// 将文件直传到 COS, 然后调用 `FinishUpload` 通知服务器验证.
+    /// 同一 [`UploadFileSession`] 上的多个 `upload()` 会串行执行，以保证每次上传只
+    /// 消费自己 prepare 出来的 bucket/region/object key/临时 COS 凭据和 FinishUpload
+    /// 参数。不同 session 仍可并发上传。
     pub async fn upload(&self, file_paths: &[PathBuf]) -> Result<Vec<UploadObjectInfo>> {
         if file_paths.is_empty() {
             return Err(QmError::ValueError("至少需要提供一个文件路径".into()));
         }
-        self.prepare(file_paths).await?;
+
+        let _upload_guard = self.upload_lock.lock().await;
+        self.prepare_inner(file_paths).await?;
         let init = self
             .init_data
             .lock()

@@ -45,7 +45,7 @@ pub fn zzc_sign(payload: &[u8]) -> String {
         .encode(part3)
         .replace(['/', '\\', '+', '='], "");
 
-    format!("zzc{}{}{}", part1, b64, part2).to_lowercase()
+    format!("zzc{part1}{b64}{part2}").to_lowercase()
 }
 
 #[cfg(test)]

@@ -5,19 +5,56 @@ on:
   pull_request:
 
 jobs:
-  test:
+  format:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.88.0
         with:
-          components: rustfmt, clippy
+          components: rustfmt
       - name: Format
         run: cargo fmt --check
+
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88.0
+        with:
+          components: clippy
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88.0
       - name: Test
         run: cargo test --all-features
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - name: RustSec dependency audit
+        run: |
+          cargo install cargo-audit --locked
+          # Library crates commonly do not commit Cargo.lock. Generate an ephemeral
+          # lockfile so RustSec audits the dependency graph Cargo would resolve now.
+          cargo generate-lockfile
+          # RUSTSEC-2023-0071 (Marvin Attack) affects RSA private-key decryption.
+          # qm-api-rs uses the rsa crate only for QIMEI public-key PKCS#1 v1.5
+          # encryption with a fixed public key and contains no RSA private-key path.
+          # Keep this narrowly scoped exception until the upstream rsa crate has a
+          # fixed release; every other advisory remains release-blocking.
+          cargo audit --ignore RUSTSEC-2023-0071
+
+  api-boundary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
       - name: No public reqwest types
         run: |
           if grep -REn 'pub[[:space:]].*(reqwest::(Client|Method|header::|Response|Error|Url|Proxy))' src; then

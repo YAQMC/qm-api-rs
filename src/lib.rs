@@ -44,6 +44,9 @@ mod client;
 mod context;
 #[cfg(test)]
 mod contract_tests;
+// Unix 与非 Unix 持久化分支各自作为函数尾表达式；保留显式 return 让跨平台
+// 控制流更直观，避免仅为 lint 改写 cfg 分支结构。
+#[allow(clippy::needless_return)]
 pub mod credential_store;
 mod device;
 mod error;
@@ -58,6 +61,9 @@ mod rate_limiter;
 mod reply;
 mod sign;
 mod transport;
+// 该模块按 DES PC-2 位序表的规范索引实现。显式 range 索引便于逐位核对协议位序，
+// 避免为 iterator 风格重写密码学兼容代码而引入位序回归。
+#[allow(clippy::needless_range_loop)]
 mod tripledes;
 mod utils;
 mod versioning;

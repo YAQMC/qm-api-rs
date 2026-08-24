@@ -8,24 +8,37 @@ use crate::tripledes::{tripledes_crypt, tripledes_key_setup, DECRYPT};
 
 /// QRC 3DES 解密密钥.
 const QRC_3DES_KEY: &[u8; 24] = b"!@#)(*$%123ZXC!@!@#)(NHL";
+/// QRC 解压后的最大歌词大小。正常歌词远小于该值；限制用于防止 zlib bomb.
+const MAX_QRC_DECOMPRESSED_BYTES: usize = 4 * 1024 * 1024;
 
 /// 解密 QRC 歌词.
 ///
-/// 使用自定义 3DES-EDE (ECB, 8 字节分块) 解密后再 zlib 解压.
+/// 使用自定义 3DES-EDE (ECB, 8 字节分块) 解密后再 zlib 解压。密文必须严格按
+/// 8 字节块对齐；解压结果限制为 4 MiB，损坏输入会返回 `None`，不会忽略尾部或
+/// 无界扩张内存。
 pub fn qrc_decrypt(encrypted: &str) -> Option<String> {
     if encrypted.is_empty() {
         return None;
     }
     let bytes = hex::decode(encrypted).ok()?;
+    if bytes.is_empty() || !bytes.len().is_multiple_of(8) {
+        return None;
+    }
+
     let schedule = tripledes_key_setup(QRC_3DES_KEY, DECRYPT);
     let mut out = Vec::with_capacity(bytes.len());
     for chunk in bytes.chunks_exact(8) {
         out.extend_from_slice(&tripledes_crypt(chunk, &schedule));
     }
-    let mut decoder = flate2::read::ZlibDecoder::new(&out[..]);
-    let mut s = String::new();
-    decoder.read_to_string(&mut s).ok()?;
-    Some(s)
+
+    let decoder = flate2::read::ZlibDecoder::new(&out[..]);
+    let mut limited = decoder.take((MAX_QRC_DECOMPRESSED_BYTES + 1) as u64);
+    let mut decoded = Vec::new();
+    limited.read_to_end(&mut decoded).ok()?;
+    if decoded.len() > MAX_QRC_DECOMPRESSED_BYTES {
+        return None;
+    }
+    String::from_utf8(decoded).ok()
 }
 
 fn decrypt_field(value: &mut Value, key: &str) {
@@ -52,6 +65,28 @@ mod tests {
             decrypted,
             "[ti:test][00:00.00]\u{4f60}\u{597d}\u{4e16}\u{754c}"
         );
+    }
+
+    #[test]
+    fn qrc_rejects_non_block_aligned_ciphertext() {
+        assert!(qrc_decrypt("001122334455667788").is_none());
+    }
+
+    #[test]
+    fn qrc_rejects_oversized_decompression() {
+        use std::io::Write;
+
+        let oversized = vec![b'a'; MAX_QRC_DECOMPRESSED_BYTES + 1];
+        let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+        encoder.write_all(&oversized).unwrap();
+        let compressed = encoder.finish().unwrap();
+
+        // 此测试验证解压读取器自身的 cap 语义；构造合法 3DES QRC 密文并非本测试目标。
+        let decoder = flate2::read::ZlibDecoder::new(&compressed[..]);
+        let mut limited = decoder.take((MAX_QRC_DECOMPRESSED_BYTES + 1) as u64);
+        let mut decoded = Vec::new();
+        limited.read_to_end(&mut decoded).unwrap();
+        assert!(decoded.len() > MAX_QRC_DECOMPRESSED_BYTES);
     }
 }
 
@@ -109,7 +144,7 @@ pub struct MultiStyleLyricItem {
     pub timestamp: i64,
 }
 
-/// 多风格翻译歌词接口响应.
+/// 获取多风格翻译歌词接口响应.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct BatchGetMultiStyleTransLyricResponse {

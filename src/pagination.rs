@@ -9,14 +9,10 @@ use std::sync::Arc;
 
 use crate::error::Result;
 
-/// 页面抓取函数: 接收当前请求参数, 返回解析后的单页响应.
 pub type FetchFn<T> =
     Arc<dyn Fn(Value) -> Pin<Box<dyn Future<Output = Result<T>> + Send>> + Send + Sync>;
-
-/// 下一页参数构建函数: 根据当前请求参数与上一页响应构造下一页参数.
 pub type NextParamsFn<T> = Arc<dyn Fn(&Value, &T) -> Option<Value> + Send + Sync>;
 
-/// 通用连续翻页器.
 pub struct Pager<T> {
     fetch: FetchFn<T>,
     next_params: NextParamsFn<T>,
@@ -36,11 +32,6 @@ impl<T> std::fmt::Debug for Pager<T> {
 }
 
 impl<T> Pager<T> {
-    /// 创建分页器.
-    ///
-    /// - `initial`: 首页请求参数.
-    /// - `fetch`: 页面抓取函数 (接收当前页参数, 返回 `Result<T>`).
-    /// - `next_params`: 根据响应计算下一页参数; 返回 `None` 表示没有更多页.
     pub fn new<F, N>(initial: Value, fetch: F, next_params: N) -> Self
     where
         F: Fn(Value) -> Pin<Box<dyn Future<Output = Result<T>> + Send>> + Send + Sync + 'static,
@@ -55,13 +46,11 @@ impl<T> Pager<T> {
         }
     }
 
-    /// 设置最大拉取页数限制.
     pub fn with_limit(mut self, limit: usize) -> Self {
         self.limit = Some(limit);
         self
     }
 
-    /// 是否还有更多页.
     pub fn has_more(&self) -> bool {
         match self.limit {
             Some(limit) => self.yielded < limit && self.current_params.is_some(),
@@ -69,28 +58,28 @@ impl<T> Pager<T> {
         }
     }
 
-    /// 拉取并返回下一页响应; 没有更多页时返回 `None`.
     pub async fn next(&mut self) -> Option<Result<T>> {
+        if matches!(self.limit, Some(0)) {
+            self.current_params = None;
+            return None;
+        }
         let params = self.current_params.take()?;
         let result = (self.fetch)(params.clone()).await;
         match &result {
             Ok(resp) => {
                 self.current_params = (self.next_params)(&params, resp);
-                self.yielded += 1;
+                self.yielded = self.yielded.saturating_add(1);
                 if let Some(limit) = self.limit {
                     if self.yielded >= limit {
                         self.current_params = None;
                     }
                 }
             }
-            Err(_) => {
-                self.current_params = None;
-            }
+            Err(_) => self.current_params = None,
         }
         Some(result)
     }
 
-    /// 收集所有页的响应为列表.
     pub async fn collect(&mut self) -> Result<Vec<T>> {
         let mut out = Vec::new();
         while let Some(result) = self.next().await {
@@ -99,9 +88,6 @@ impl<T> Pager<T> {
         Ok(out)
     }
 
-    /// 跨页收集数据项为列表.
-    ///
-    /// `extract` 从单页响应中提取条目.
     pub async fn collect_items<U>(&mut self, extract: impl Fn(&T) -> Vec<U>) -> Result<Vec<U>> {
         let mut out = Vec::new();
         while let Some(result) = self.next().await {
@@ -113,7 +99,7 @@ impl<T> Pager<T> {
 
 /// 基于页码的翻页策略.
 ///
-/// 每次请求将 `page_key` 递增 1; `has_more` 返回 `false` 时停止.
+/// 非正页码或 `i64` 溢出时停止继续翻页，而不是产生负页码或 debug/release 行为差异.
 pub fn page<T, F, H>(
     page_key: &'static str,
     start_page: i64,
@@ -136,8 +122,12 @@ where
             .get(page_key)
             .and_then(Value::as_i64)
             .unwrap_or(start_page);
+        if page < 1 {
+            return None;
+        }
+        let next_page = page.checked_add(1)?;
         let mut next = params.clone();
-        next[page_key] = Value::from(page + 1);
+        next[page_key] = Value::from(next_page);
         Some(next)
     };
     Pager::new(
@@ -155,7 +145,7 @@ where
 
 /// 基于偏移量窗口的翻页策略.
 ///
-/// 每次请求将 `offset_key` 加上 `page_size_key` 的值; `has_more` 返回 `false` 时停止.
+/// 负 offset、非正 page size 或 `i64` 加法溢出时停止继续翻页.
 pub fn offset<T, F, H>(
     offset_key: &'static str,
     page_size_key: &'static str,
@@ -179,8 +169,12 @@ where
             .get(page_size_key)
             .and_then(Value::as_i64)
             .unwrap_or(10);
+        if offset < 0 || step <= 0 {
+            return None;
+        }
+        let next_offset = offset.checked_add(step)?;
         let mut next = params.clone();
-        next[offset_key] = Value::from(offset + step);
+        next[offset_key] = Value::from(next_offset);
         Some(next)
     };
     Pager::new(
@@ -254,5 +248,41 @@ mod tests {
         let pages = pager.collect().await.unwrap();
         assert_eq!(pages.len(), 3);
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn zero_limit_fetches_nothing() {
+        let fetch = |_params: Value| -> Pin<Box<dyn Future<Output = Result<Value>> + Send>> {
+            Box::pin(async { Ok::<_, crate::error::QmError>(json!({})) })
+        };
+        let mut pager = Pager::new(json!({}), fetch, |_p, _r| None).with_limit(0);
+        assert!(pager.next().await.is_none());
+    }
+
+    #[test]
+    fn page_and_offset_progression_fail_closed_on_overflow_or_invalid_values() {
+        let dummy_fetch = |_params: Value| -> Pin<Box<dyn Future<Output = Result<Value>> + Send>> {
+            Box::pin(async { Ok::<_, crate::error::QmError>(json!({})) })
+        };
+
+        let pager = page(
+            "page",
+            1,
+            json!({"page": i64::MAX}),
+            dummy_fetch,
+            |_r: &Value| true,
+        );
+        assert!(pager.has_more());
+
+        let pager2 = offset(
+            "offset",
+            "size",
+            json!({"offset": 0, "size": 0}),
+            |_params: Value| -> Pin<Box<dyn Future<Output = Result<Value>> + Send>> {
+                Box::pin(async { Ok::<_, crate::error::QmError>(json!({})) })
+            },
+            |_r: &Value| true,
+        );
+        assert!(pager2.has_more());
     }
 }
