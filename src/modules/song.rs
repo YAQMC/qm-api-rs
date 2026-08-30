@@ -10,6 +10,22 @@ use crate::models::Credential;
 use crate::models::Song;
 use crate::utils::get_guid;
 
+/// Returns the canonical public QQ Music song-detail URL for a validated song
+/// MID or numeric song ID.
+///
+/// This deliberately accepts only the identifier alphabet used by public song
+/// pages. Callers must not pass an already-formed URL or untrusted path/query
+/// fragments through this helper.
+pub fn canonical_song_url(song_id: &str) -> Option<String> {
+    if song_id.is_empty()
+        || song_id.len() > 64
+        || !song_id.bytes().all(|byte| byte.is_ascii_alphanumeric())
+    {
+        return None;
+    }
+    Some(format!("https://y.qq.com/n/ryqq/songDetail/{song_id}"))
+}
+
 /// 歌曲音质档位 (按优先级从高到低).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SongQuality {
@@ -894,5 +910,37 @@ impl SongApi {
                 RequestOptions::default(),
             )
             .await
+    }
+}
+
+#[cfg(test)]
+mod public_url_tests {
+    use super::canonical_song_url;
+
+    #[test]
+    fn canonical_song_url_accepts_mid_and_numeric_identifiers() {
+        assert_eq!(
+            canonical_song_url("001X3HEN1oK0Jr").as_deref(),
+            Some("https://y.qq.com/n/ryqq/songDetail/001X3HEN1oK0Jr")
+        );
+        assert_eq!(
+            canonical_song_url("464890160").as_deref(),
+            Some("https://y.qq.com/n/ryqq/songDetail/464890160")
+        );
+    }
+
+    #[test]
+    fn canonical_song_url_rejects_path_query_encoding_and_oversize_input() {
+        for invalid in [
+            "",
+            "../song",
+            "mid?uin=1",
+            "mid#fragment",
+            "mid%2fescape",
+            "歌曲",
+        ] {
+            assert_eq!(canonical_song_url(invalid), None, "input: {invalid:?}");
+        }
+        assert_eq!(canonical_song_url(&"a".repeat(65)), None);
     }
 }

@@ -83,7 +83,7 @@ pub use modules::helper_utils::UploadFileSession;
 pub use modules::login_utils::{PhoneLoginSession, PollInterval, QRCodeLoginSession};
 pub use modules::search::SearchType;
 pub use modules::singer::{AreaType, GenreType, IndexType, SexType, TabType};
-pub use modules::song::{SongFileInfo, SongFileType, SongQuality};
+pub use modules::song::{canonical_song_url, SongFileInfo, SongFileType, SongQuality};
 pub use pagination::{offset, page, Pager};
 pub use reply::{BatchReport, CgiReply};
 pub use transport::{

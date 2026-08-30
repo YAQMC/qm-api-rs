@@ -69,7 +69,7 @@ cargo run --example demo
 
 | 模块 | 说明 | 主要方法 |
 | --- | --- | --- |
-| `client.song` | 歌曲 | `get_song_urls`, `get_detail`, `get_similar_song`, `get_sheet(SheetType)` 等 |
+| `client.song` | 歌曲 | `get_song_urls`, `get_detail`, `get_similar_song`, `get_sheet(SheetType)` 等；`canonical_song_url` 生成经过验证的公开歌曲页链接 |
 | `client.search` | 搜索 | `search_by_type`, `general_search`, `get_hotkey`, `complete`, `quick_search` |
 | `client.singer` | 歌手 | `get_info`, `get_songs_list`, `get_album_list`, `get_similar` 等 |
 | `client.album` | 专辑 | `get_detail`, `get_song`, `get_new_album` |
