@@ -9,6 +9,7 @@ use std::sync::Arc;
 use crate::context::ApiContext;
 use crate::models::comment::CommentBizType;
 use crate::models::login::QRLoginType;
+use crate::models::recommend::{GuessRecommendRequest, RadarRecommendRequest};
 use crate::modules::comment::CommentApi;
 use crate::modules::login::LoginApi;
 use crate::modules::recommend::RecommendApi;
@@ -323,6 +324,107 @@ async fn recommend_home_feed_contract() {
     let resp = api.get_home_feed(1, 0, 5, &[]).await.unwrap();
     assert_eq!(resp.shelves.len(), 1);
     assert_eq!(resp.shelves[0].title_content, "for you");
+}
+
+#[tokio::test]
+async fn recommend_guess_request_contract() {
+    let base = spawn_strict(Expect {
+        module: "music.radioProxy.MbTrackRadioSvr",
+        method: "get_radio_track",
+        param_ok: |p| {
+            p.get("id").and_then(Value::as_i64) == Some(99)
+                && p.get("num").and_then(Value::as_u64) == Some(7)
+                && p.get("from").and_then(Value::as_u64) == Some(12)
+                && p.get("scene").and_then(Value::as_i64) == Some(0)
+                && p.get("song_ids") == Some(&json!([101, 202]))
+        },
+        comm_ok: web_comm_ok,
+        body: r#"{"code":0,"req_0":{"code":0,"data":{
+            "tracks":[{"id":7,"mid":"GUESS_MID","name":"Guess song"}]
+        }}}"#,
+    })
+    .await;
+    let api = RecommendApi::new(Arc::new(web_ctx(&base)));
+    let response = api
+        .get_guess_recommend_with_request(
+            &GuessRecommendRequest {
+                limit: 7,
+                offset: 12,
+                seed_song_ids: vec![101, 202],
+            },
+            Some(&login_cred()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.songs.len(), 1);
+    assert_eq!(response.songs[0].mid, "GUESS_MID");
+}
+
+#[tokio::test]
+async fn recommend_radar_request_contract_accepts_empty_results() {
+    let base = spawn_strict(Expect {
+        module: "music.recommend.TrackRelationServer",
+        method: "GetRadarSong",
+        param_ok: |p| {
+            p.get("Page").and_then(Value::as_u64) == Some(3)
+                && p.get("ReqType").and_then(Value::as_u64) == Some(2)
+                && p.get("FavSongs") == Some(&json!([303]))
+                && p.get("EntranceSongs") == Some(&json!([101, 202]))
+        },
+        comm_ok: web_comm_ok,
+        body: r#"{"code":0,"req_0":{"code":0,"data":{
+            "VecSongs":[],"RecommendSongIds":[],"BaseSongIds":[],"HasMore":false
+        }}}"#,
+    })
+    .await;
+    let api = RecommendApi::new(Arc::new(web_ctx(&base)));
+    let response = api
+        .get_radar_recommend_with_request(
+            &RadarRecommendRequest {
+                page: 3,
+                request_type: 2,
+                favorite_song_ids: vec![303],
+                entrance_song_ids: vec![101, 202],
+            },
+            Some(&login_cred()),
+        )
+        .await
+        .unwrap();
+    assert!(response.songs.is_empty());
+    assert!(!response.has_more);
+}
+
+#[tokio::test]
+async fn recommend_business_error_is_preserved() {
+    let base = spawn_strict(Expect {
+        module: "music.radioProxy.MbTrackRadioSvr",
+        method: "get_radio_track",
+        param_ok: |_| true,
+        comm_ok: web_comm_ok,
+        body: r#"{"code":0,"req_0":{"code":104003,"data":{"message":"denied"}}}"#,
+    })
+    .await;
+    let api = RecommendApi::new(Arc::new(web_ctx(&base)));
+    let error = api.get_guess_recommend(None).await.unwrap_err();
+    assert!(matches!(
+        error,
+        crate::error::QmError::CgiApi { code: 104003, .. }
+    ));
+}
+
+#[tokio::test]
+async fn recommend_shape_drift_is_not_treated_as_an_empty_batch() {
+    let base = spawn_strict(Expect {
+        module: "music.recommend.TrackRelationServer",
+        method: "GetRadarSong",
+        param_ok: |_| true,
+        comm_ok: web_comm_ok,
+        body: r#"{"code":0,"req_0":{"code":0,"data":{"unexpected":[]}}}"#,
+    })
+    .await;
+    let api = RecommendApi::new(Arc::new(web_ctx(&base)));
+    let error = api.get_radar_recommend(1).await.unwrap_err();
+    assert!(matches!(error, crate::error::QmError::Protocol { .. }));
 }
 
 #[tokio::test]

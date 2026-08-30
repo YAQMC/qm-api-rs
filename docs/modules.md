@@ -331,7 +331,9 @@ comment.raw_update_hot_comment(param, credential) -> Value   // 更新热评状�
 ```rust
 recommend.get_home_feed(page, direction, s_num, v_cache) -> RecommendFeedCardResponse
 recommend.get_guess_recommend(credential) -> GuessRecommendResponse
+recommend.get_guess_recommend_with_request(request, credential) -> GuessRecommendResponse
 recommend.get_radar_recommend(page) -> RadarRecommendResponse
+recommend.get_radar_recommend_with_request(request, credential) -> RadarRecommendResponse
 recommend.get_recommend_songlist(page, num) -> RecommendSonglistResponse
 recommend.get_recommend_newsong(type) -> RecommendNewSongResponse
 ```

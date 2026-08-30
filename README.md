@@ -78,7 +78,7 @@ cargo run --example demo
 | `client.top` | 排行榜 | `get_category`, `get_detail` |
 | `client.songlist` | 歌单 | `get_detail`, `create`, `delete`, `add_songs`, `like_song` 等 |
 | `client.comment` | 评论 | `get_hot_comments`, `get_new_comments`, `add_comment` 等 |
-| `client.recommend` | 推荐 | `get_home_feed`, `get_guess_recommend`, `get_recommend_songlist` |
+| `client.recommend` | 推荐 | `get_home_feed`, `get_guess_recommend_with_request`, `get_radar_recommend_with_request`, `get_recommend_songlist` |
 | `client.user` | 用户 | `get_homepage`, `get_vip_info`, `get_created_songlist`, `fav_songlist`, `add_dislike(DislikeIdType)` 等 |
 | `client.login` | 登录 | `get_qrcode`, `check_qrcode`, `send_authcode`, `phone_authorize`, `refresh_credential` |
 | `client.helper` | 上传辅助 | `init_upload`, `finish_upload`, `UploadFileSession` |

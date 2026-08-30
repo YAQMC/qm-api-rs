@@ -6,6 +6,46 @@ use serde_json::Value;
 use super::base::{Song, SongList};
 use crate::jsonpath_model;
 
+/// `get_radio_track` 参数.
+///
+/// `offset` 对应 wire 字段 `from`; 使用明确字段名避免调用方依赖原始 JSON.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GuessRecommendRequest {
+    pub limit: u32,
+    pub offset: u32,
+    pub seed_song_ids: Vec<u64>,
+}
+
+impl Default for GuessRecommendRequest {
+    fn default() -> Self {
+        Self {
+            limit: 5,
+            offset: 0,
+            seed_song_ids: Vec::new(),
+        }
+    }
+}
+
+/// `GetRadarSong` 参数.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RadarRecommendRequest {
+    pub page: u32,
+    pub request_type: u32,
+    pub favorite_song_ids: Vec<u64>,
+    pub entrance_song_ids: Vec<u64>,
+}
+
+impl Default for RadarRecommendRequest {
+    fn default() -> Self {
+        Self {
+            page: 1,
+            request_type: 0,
+            favorite_song_ids: Vec::new(),
+            entrance_song_ids: Vec::new(),
+        }
+    }
+}
+
 /// 首页推荐楼层中的细分卡片分组.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
