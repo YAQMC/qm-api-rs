@@ -6,6 +6,15 @@ use serde_json::Value;
 use super::base::{Song, SongList};
 use crate::jsonpath_model;
 
+/// 当前登录账号的“今日私享”歌单入口.
+///
+/// `songlist_id` 是账号相关的临时目录 ID；调用方应将其交给
+/// [`crate::modules::SonglistApi`] 获取歌单详情，不应持久化为全局常量.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DailyRecommendationResponse {
+    pub songlist_id: i64,
+}
+
 /// `get_radio_track` 参数.
 ///
 /// `offset` 对应 wire 字段 `from`; 使用明确字段名避免调用方依赖原始 JSON.
