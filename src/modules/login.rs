@@ -1,7 +1,24 @@
 //! 登录相关业务接口 (对应 Python 端 `modules/login.py`).
 
 use serde_json::{json, Value};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+/// Non-sensitive progress events emitted by the mobile QR login transport.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MobileLoginEvent {
+    Connected,
+    Subscribed,
+    Scanned,
+    CredentialsParsed,
+    Exchanging,
+    Exchanged,
+    Refused,
+    Expired,
+    Failure { code: Option<i64> },
+}
 
 use super::ApiModule;
 use crate::context::RequestOptions;
@@ -441,6 +458,18 @@ impl LoginApi {
         qrcode: &QR,
         timeout: std::time::Duration,
     ) -> Result<Vec<QRLoginResult>> {
+        self.checking_mobile_qrcode_observed(qrcode, timeout, Arc::new(|_| {}))
+            .await
+    }
+
+    /// Run one mobile QR MQTT attempt and report progress as it occurs.
+    /// The callback carries only typed, non-sensitive state.
+    pub async fn checking_mobile_qrcode_observed(
+        &self,
+        qrcode: &QR,
+        timeout: std::time::Duration,
+        observer: Arc<dyn Fn(MobileLoginEvent) + Send + Sync>,
+    ) -> Result<Vec<QRLoginResult>> {
         use crate::mqtt::{keep_alive_interval, MqttClient, MqttProperties};
         use rand::Rng;
         use std::time::Instant;
@@ -481,11 +510,13 @@ impl LoginApi {
         )
         .await
         .map_err(|e| QmError::network(format!("MQTT 连接失败: {e}")))?;
+        observer(MobileLoginEvent::Connected);
 
         let topic = format!("management.qrcode_login/{qrcode_id}");
         let sub_props = MqttProperties::default()
             .user_property(&[("authorization", "tmelogin"), ("pubsub", "unicast")]);
         client.subscribe(&topic, &sub_props).await?;
+        observer(MobileLoginEvent::Subscribed);
 
         let mut events = vec![QRLoginResult {
             event: QRCodeLoginEvents::Scan,
@@ -521,7 +552,7 @@ impl LoginApi {
                         match msg {
                             Ok(message) => {
                                 if self
-                                    .ingest_mobile_mqtt(&qrcode_id, message, &mut events)
+                                    .ingest_mobile_mqtt(&qrcode_id, message, &mut events, &observer)
                                     .await?
                                 {
                                     break;
@@ -548,7 +579,7 @@ impl LoginApi {
                         match msg {
                             Ok(message) => {
                                 if self
-                                    .ingest_mobile_mqtt(&qrcode_id, message, &mut events)
+                                    .ingest_mobile_mqtt(&qrcode_id, message, &mut events, &observer)
                                     .await?
                                 {
                                     break;
@@ -577,11 +608,19 @@ impl LoginApi {
         qrcode_id: &str,
         message: crate::mqtt::MqttMessage,
         events: &mut Vec<QRLoginResult>,
+        observer: &Arc<dyn Fn(MobileLoginEvent) + Send + Sync>,
     ) -> Result<bool> {
+        // Bind every business event to the attempt's exact subscription.  The
+        // broker normally enforces this, but retaining the check here prevents
+        // a stale/incorrectly routed PUBLISH from completing another attempt.
+        let expected_topic = format!("management.qrcode_login/{qrcode_id}");
+        if message.topic != expected_topic {
+            return Ok(false);
+        }
         let message_type = message.properties.get("type").cloned();
         let payload = message.json();
         let item = self
-            .handle_mobile_message(qrcode_id, message_type.as_deref(), payload)
+            .handle_mobile_message(qrcode_id, message_type.as_deref(), payload, observer)
             .await?;
         if let Some(item) = item {
             let terminal = matches!(
@@ -600,24 +639,36 @@ impl LoginApi {
         qrcode_id: &str,
         event_type: Option<&str>,
         payload: Option<Value>,
+        observer: &Arc<dyn Fn(MobileLoginEvent) + Send + Sync>,
     ) -> Result<Option<QRLoginResult>> {
         match event_type {
-            Some("scanned") => Ok(Some(QRLoginResult {
-                event: QRCodeLoginEvents::Conf,
-                credential: None,
-            })),
-            Some("canceled") => Ok(Some(QRLoginResult {
-                event: QRCodeLoginEvents::Refuse,
-                credential: None,
-            })),
-            Some("timeout") => Ok(Some(QRLoginResult {
-                event: QRCodeLoginEvents::Timeout,
-                credential: None,
-            })),
-            Some("loginFailed") => Err(QmError::Login {
-                message: "登录失败".into(),
-                code: -1,
-            }),
+            Some("scanned") => {
+                observer(MobileLoginEvent::Scanned);
+                Ok(Some(QRLoginResult {
+                    event: QRCodeLoginEvents::Conf,
+                    credential: None,
+                }))
+            }
+            Some("canceled") => {
+                observer(MobileLoginEvent::Refused);
+                Ok(Some(QRLoginResult {
+                    event: QRCodeLoginEvents::Refuse,
+                    credential: None,
+                }))
+            }
+            Some("timeout") => {
+                observer(MobileLoginEvent::Expired);
+                Ok(Some(QRLoginResult {
+                    event: QRCodeLoginEvents::Timeout,
+                    credential: None,
+                }))
+            }
+            Some("loginFailed") => {
+                observer(MobileLoginEvent::Failure { code: None });
+                Err(QmError::QrLogin {
+                    reason: crate::QrLoginReason::LoginFailed,
+                })
+            }
             Some("cookies") => {
                 let payload =
                     payload.ok_or_else(|| QmError::ApiData("无效的 MQTT 消息格式".into()))?;
@@ -625,25 +676,45 @@ impl LoginApi {
                 let uin = cookies["qqmusic_uin"]["value"].as_str().unwrap_or("");
                 let key = cookies["qqmusic_key"]["value"].as_str().unwrap_or("");
                 if uin.is_empty() || key.is_empty() {
-                    return Err(QmError::ApiData("获取登录凭据失败: 缺少必要参数".into()));
+                    return Err(QmError::QrLogin {
+                        reason: crate::QrLoginReason::MissingCredential,
+                    });
                 }
+                let music_id =
+                    uin.parse::<i64>()
+                        .ok()
+                        .filter(|id| *id > 0)
+                        .ok_or(QmError::QrLogin {
+                            reason: crate::QrLoginReason::MissingCredential,
+                        })?;
+                observer(MobileLoginEvent::CredentialsParsed);
                 let mut opts = RequestOptions::default();
                 opts.comm = Some(json!({ "tmeLoginType": 6 }));
                 opts.retry = RetryClass::Write;
+                observer(MobileLoginEvent::Exchanging);
                 let reply = self
                     .base
                     .cgi_reply(
                         "music.login.LoginServer",
                         "Login",
                         json!({
-                            "musicid": uin.parse::<i64>().unwrap_or(0),
+                            "musicid": music_id,
                             "qrCodeID": qrcode_id,
                             "token": key,
                         }),
                         opts,
                     )
                     .await?;
-                let credential = Self::validate_result(reply)?;
+                let credential = Self::validate_result(reply).inspect_err(|error| {
+                    let code = match error {
+                        QmError::Login { code, .. }
+                        | QmError::GlobalApi { code, .. }
+                        | QmError::CgiApi { code, .. } => Some(*code),
+                        _ => None,
+                    };
+                    observer(MobileLoginEvent::Failure { code });
+                })?;
+                observer(MobileLoginEvent::Exchanged);
                 Ok(Some(QRLoginResult {
                     event: QRCodeLoginEvents::Done,
                     credential: Some(credential),
@@ -996,4 +1067,89 @@ fn extract_cookie(headers: &[(String, String)], name: &str) -> String {
         }
     }
     value
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::HashMap, sync::Mutex};
+
+    use super::*;
+    use crate::{context::ApiContext, mqtt::MqttMessage, QrLoginReason};
+
+    fn api() -> LoginApi {
+        LoginApi::new(Arc::new(ApiContext::new(None, None).unwrap()))
+    }
+
+    fn observer(
+        events: &Arc<Mutex<Vec<MobileLoginEvent>>>,
+    ) -> Arc<dyn Fn(MobileLoginEvent) + Send + Sync> {
+        let events = events.clone();
+        Arc::new(move |event| events.lock().unwrap().push(event))
+    }
+
+    #[tokio::test]
+    async fn mobile_events_preserve_terminal_outcomes_without_credentials() {
+        let api = api();
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let observer = observer(&observed);
+
+        let scanned = api
+            .handle_mobile_message("qr", Some("scanned"), None, &observer)
+            .await
+            .unwrap()
+            .unwrap();
+        let refused = api
+            .handle_mobile_message("qr", Some("canceled"), None, &observer)
+            .await
+            .unwrap()
+            .unwrap();
+        let expired = api
+            .handle_mobile_message("qr", Some("timeout"), None, &observer)
+            .await
+            .unwrap()
+            .unwrap();
+        let failed = api
+            .handle_mobile_message("qr", Some("loginFailed"), None, &observer)
+            .await
+            .unwrap_err();
+
+        assert_eq!(scanned.event, QRCodeLoginEvents::Conf);
+        assert_eq!(refused.event, QRCodeLoginEvents::Refuse);
+        assert_eq!(expired.event, QRCodeLoginEvents::Timeout);
+        assert!(matches!(
+            failed,
+            QmError::QrLogin {
+                reason: QrLoginReason::LoginFailed
+            }
+        ));
+        assert_eq!(
+            *observed.lock().unwrap(),
+            [
+                MobileLoginEvent::Scanned,
+                MobileLoginEvent::Refused,
+                MobileLoginEvent::Expired,
+                MobileLoginEvent::Failure { code: None },
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn mobile_ingest_ignores_messages_from_another_qr_topic() {
+        let api = api();
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let observer = observer(&observed);
+        let mut results = Vec::new();
+        let message = MqttMessage {
+            topic: "management.qrcode_login/other".into(),
+            payload: Vec::new(),
+            properties: HashMap::from([("type".into(), "canceled".into())]),
+        };
+
+        assert!(!api
+            .ingest_mobile_mqtt("expected", message, &mut results, &observer)
+            .await
+            .unwrap());
+        assert!(results.is_empty());
+        assert!(observed.lock().unwrap().is_empty());
+    }
 }

@@ -3,7 +3,7 @@
 use std::time::{Duration, Instant};
 
 use super::login::LoginApi;
-use crate::error::{QmError, Result};
+use crate::error::{QmError, QrLoginReason, Result};
 use crate::models::login::{
     PhoneAuthCodeResult, QRCodeLoginEvents, QRLoginResult, QRLoginType, QR,
 };
@@ -274,29 +274,25 @@ impl QRCodeLoginSession {
         for result in events {
             match result.event {
                 QRCodeLoginEvents::Done => {
-                    return result.credential.ok_or_else(|| QmError::Login {
-                        message: "登录结果缺少凭证".into(),
-                        code: -1,
+                    return result.credential.ok_or(QmError::QrLogin {
+                        reason: QrLoginReason::MissingCredential,
                     });
                 }
                 QRCodeLoginEvents::Refuse => {
-                    return Err(QmError::Login {
-                        message: "用户拒绝了登录请求".into(),
-                        code: -1,
+                    return Err(QmError::QrLogin {
+                        reason: QrLoginReason::Refused,
                     });
                 }
                 QRCodeLoginEvents::Timeout => {
-                    return Err(QmError::Login {
-                        message: "登录二维码已超时".into(),
-                        code: -1,
+                    return Err(QmError::QrLogin {
+                        reason: QrLoginReason::Timeout,
                     });
                 }
                 _ => {}
             }
         }
-        Err(QmError::Login {
-            message: "登录流程异常结束".into(),
-            code: -1,
+        Err(QmError::QrLogin {
+            reason: QrLoginReason::FlowEnded,
         })
     }
 }

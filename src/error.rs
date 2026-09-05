@@ -40,6 +40,17 @@ pub enum NetworkErrorKind {
     Other,
 }
 
+/// Typed terminal outcome of a QR login flow.  Unlike the generic login
+/// error, these values preserve whether the user refused or the flow failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QrLoginReason {
+    Refused,
+    Timeout,
+    MissingCredential,
+    LoginFailed,
+    FlowEnded,
+}
+
 /// 结构化的网络错误.
 #[derive(Debug, Clone)]
 pub struct NetworkError {
@@ -175,6 +186,11 @@ pub enum QmError {
     #[error("login error: {message} (code {code})")]
     Login { message: String, code: i64 },
 
+    /// Typed QR-login terminal outcome; deliberately separate from CGI login
+    /// business errors so callers cannot mistake code=-1 for refusal.
+    #[error("qr login outcome: {reason:?}")]
+    QrLogin { reason: QrLoginReason },
+
     /// 凭证刷新失败.
     #[error("credential refresh failed: {0}")]
     CredentialRefresh(String),
@@ -239,6 +255,10 @@ impl QmError {
             QmError::CredentialExpired(_) => ErrorCategory::Auth,
             QmError::CredentialInvalid(_) => ErrorCategory::Auth,
             QmError::Login { .. } => ErrorCategory::Auth,
+            QmError::QrLogin {
+                reason: QrLoginReason::Refused,
+            } => ErrorCategory::Auth,
+            QmError::QrLogin { .. } => ErrorCategory::BadRequest,
             QmError::CredentialRefresh(_) => ErrorCategory::Auth,
             QmError::Deserialize(_) => ErrorCategory::BadRequest,
             QmError::Protocol { .. } => ErrorCategory::BadRequest,
@@ -413,6 +433,20 @@ mod tests {
             }
             .category(),
             ErrorCategory::Auth
+        );
+        assert_eq!(
+            QmError::QrLogin {
+                reason: QrLoginReason::Refused
+            }
+            .category(),
+            ErrorCategory::Auth
+        );
+        assert_eq!(
+            QmError::QrLogin {
+                reason: QrLoginReason::Timeout
+            }
+            .category(),
+            ErrorCategory::BadRequest
         );
         assert_eq!(
             QmError::Http {
