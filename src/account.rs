@@ -6,7 +6,9 @@
 
 use serde_json::{json, Value};
 
-use crate::{CancellationToken, Client, Credential, HttpMethod, HttpOptions, QmError, Result};
+use crate::{
+    CancellationToken, CgiOptions, Client, Credential, HttpMethod, HttpOptions, QmError, Result,
+};
 
 /// The only account read operations exposed by this compatibility boundary.
 #[derive(Clone, Debug)]
@@ -132,6 +134,62 @@ pub async fn read_page(
         return Err(cancelled());
     }
     parse_page(serde_json::from_str(&response)?, &operation, offset, limit)
+}
+
+/// Execute one of the account write endpoints used by YAQMC's compatibility
+/// façade.  The endpoint allowlist and account comm envelope live in this
+/// crate; callers cannot select an arbitrary CGI route.
+pub async fn write_legacy(
+    client: &Client,
+    credential: &Credential,
+    module: &str,
+    method: &str,
+    param: Value,
+    cancellation: CancellationToken,
+) -> Result<crate::CgiReply<Value>> {
+    let allowed = matches!(
+        (module, method),
+        ("music.musicasset.PlaylistDetailWrite", "AddSonglist")
+            | ("music.musicasset.PlaylistDetailWrite", "DelSonglist")
+            | ("music.musicasset.PlaylistBaseWrite", "AddPlaylist")
+            | ("music.musicasset.PlaylistBaseWrite", "DelPlaylist")
+            | ("music.musicasset.PlaylistBaseWrite", "EditPlaylist")
+            | ("music.musicasset.PlaylistFavWrite", "FavPlaylist")
+            | ("music.musicasset.PlaylistFavWrite", "CancelFavPlaylist")
+    );
+    if !allowed {
+        return Err(QmError::ValueError(
+            "unsupported account write endpoint".into(),
+        ));
+    }
+    if credential.musicid <= 0 || credential.musickey.is_empty() {
+        return Err(QmError::CredentialInvalid(
+            "account write requires credentials".into(),
+        ));
+    }
+    let mut options = CgiOptions::default();
+    options.comm = Some(account_write_comm(credential));
+    options.override_comm = true;
+    options.credential = Some(credential.clone());
+    options.require_login = true;
+    options.retry = crate::RetryClass::Write;
+    options.preserve_bool = true;
+    options.cancellation = cancellation;
+    client.request_cgi(module, method, param, &options).await
+}
+
+fn account_write_comm(credential: &Credential) -> Value {
+    let uin = credential.str_musicid();
+    let gtk = crate::hash33(&credential.musickey, 5381);
+    json!({
+        "ct": "11", "cv": 13_020_508, "v": 13_020_508,
+        "tmeAppID": "qqmusic", "format": "json", "inCharset": "utf-8",
+        "outCharset": "utf-8", "notice": 0, "needNewCode": 1,
+        "platform": "yqq.json", "uid": uin, "qq": uin, "uin": uin,
+        "loginUin": uin, "authst": credential.musickey,
+        "tmeLoginType": credential.login_type.to_string(), "g_tk": gtk,
+        "g_tk_new_20200303": gtk
+    })
 }
 
 fn cancelled() -> QmError {
