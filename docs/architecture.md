@@ -43,6 +43,8 @@ Client
   `new_with_transport_config(TransportConfig)` 只改超时/代理/重试而不换实现。
   **`ApiTransport` 不必实现 cookie store**。鉴权 Cookie 与浏览器头由库写在每次
   CGI 请求上，不假设 jar，也不假设调用方补 `Referer`。
+  匿名 CGI 发送空 Cookie header，防止登录 HTTP 的 jar 注入旧会话；显式 Cookie 作用域
+  在跨 origin 重定向后仍保持隔离，不重新启用 jar。通用登录 HTTP 的会话 Cookie 不受影响。
 - **Timeout**：默认 connect **5s**、总超时 **15s**（`TransportConfig` 可改）。
   单次请求可用 `HttpOptions.timeout` 覆盖总超时（微信二维码长轮询 35s）。
 - **Allowlist**：发送前检查 host。生产 HTTPS 至少覆盖
@@ -53,6 +55,8 @@ Client
   该 origin。拒绝返回 `QmError::Protocol { stage: "allowlist", .. }`，不 panic。
 - **Redirect**：默认 `FollowValidated`，校验 allowlist 后最多 **3** 跳；
   二维码 / cookie 交换使用 `RedirectMode::None`（返回 30x，不跟随）。
+  跨 origin 的 307/308 若会保留请求体或敏感 header 则拒绝，避免把 CGI `comm` 或登录表单
+  转发到另一 origin；仅移除 Cookie/Authorization 不能保护请求体中的凭据。
 - **Cancellation**：每个请求携带 `tokio-util::sync::CancellationToken`
   （crate 再导出为 `qqmusic_api::CancellationToken`）。默认 transport 在
   send / 读 body / 重试等待时 `select!` 该令牌；取消为

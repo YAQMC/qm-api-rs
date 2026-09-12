@@ -421,6 +421,122 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cross_origin_body_preserving_redirects_do_not_forward_credentials() {
+        use axum::{http::StatusCode, routing::any, Router};
+        for status in [
+            StatusCode::TEMPORARY_REDIRECT,
+            StatusCode::PERMANENT_REDIRECT,
+        ] {
+            let hits = Arc::new(AtomicU32::new(0));
+            let target_hits = hits.clone();
+            let (target, _) = spawn_router(Router::new().route(
+                "/target",
+                any(move || {
+                    target_hits.fetch_add(1, Ordering::SeqCst);
+                    async { "unexpected" }
+                }),
+            ))
+            .await;
+            let location = format!("{target}/target");
+            let (source, _) = spawn_router(Router::new().route(
+                "/source",
+                any(move || {
+                    let location = location.clone();
+                    async move { (status, [("location", location)]) }
+                }),
+            ))
+            .await;
+            let transport = transport_for(&source, TransportConfig::default());
+            transport.allow_origin(&target);
+            for body in [
+                HttpBody::Json(serde_json::json!({"comm":{"authst":"synthetic-token"}})),
+                HttpBody::Form(serde_json::json!({"access_token":"synthetic-token"})),
+                HttpBody::Bytes(b"synthetic-token".to_vec()),
+            ] {
+                let mut request =
+                    TransportRequest::new(HttpMethod::Post, format!("{source}/source"));
+                request.retry = RetryClass::Write;
+                request.body = body;
+                let error = transport
+                    .execute(request)
+                    .await
+                    .expect_err("must reject cross-origin replay");
+                assert!(
+                    matches!(error, QmError::Network(ref n) if n.kind == NetworkErrorKind::Redirect)
+                );
+            }
+            assert_eq!(hits.load(Ordering::SeqCst), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn explicit_cookies_stay_isolated_across_redirects() {
+        use axum::{
+            http::{HeaderMap, StatusCode},
+            routing::get,
+            Router,
+        };
+        let target_app = Router::new()
+            .route(
+                "/seed",
+                get(|| async {
+                    (
+                        [("set-cookie", "qm_keyst=synthetic-target-session; Path=/")],
+                        "seed",
+                    )
+                }),
+            )
+            .route(
+                "/target",
+                get(|headers: HeaderMap| async move {
+                    headers
+                        .get("cookie")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("")
+                        .to_owned()
+                }),
+            );
+        let (target, _) = spawn_router(target_app).await;
+        let target_url = format!("{target}/target");
+        let source_app = Router::new().route(
+            "/from",
+            get(move || {
+                let target_url = target_url.clone();
+                async move { (StatusCode::FOUND, [("location", target_url)]) }
+            }),
+        );
+        let (source, _) = spawn_router(source_app).await;
+        let transport = transport_for(&source, TransportConfig::default());
+        transport.allow_origin(&target);
+        transport
+            .execute(TransportRequest::new(
+                HttpMethod::Get,
+                format!("{target}/seed"),
+            ))
+            .await
+            .unwrap();
+        for cookie in ["", "qm_keyst=synthetic-source-session"] {
+            let mut request = TransportRequest::new(HttpMethod::Get, format!("{source}/from"));
+            request.headers.push(("Cookie".into(), cookie.into()));
+            let response = transport.execute(request).await.unwrap();
+            assert_eq!(response.status, 200);
+            assert!(
+                response.text().is_empty(),
+                "redirect reactivated ambient cookies"
+            );
+        }
+        // Calls without explicit credential scope retain generic login HTTP behavior.
+        let response = transport
+            .execute(TransportRequest::new(
+                HttpMethod::Get,
+                format!("{source}/from"),
+            ))
+            .await
+            .unwrap();
+        assert!(response.text().contains("synthetic-target-session"));
+    }
+
+    #[tokio::test]
     async fn redirect_follow_three_hops() {
         use axum::http::header::LOCATION;
         use axum::http::StatusCode;

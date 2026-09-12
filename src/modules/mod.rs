@@ -2,6 +2,7 @@
 
 pub mod album;
 pub mod comment;
+pub mod discovery;
 pub mod helper;
 pub mod helper_utils;
 pub mod login;
@@ -19,6 +20,7 @@ pub mod user;
 
 pub use album::AlbumApi;
 pub use comment::CommentApi;
+pub use discovery::DiscoveryApi;
 pub use helper::HelperApi;
 pub use helper_utils::UploadFileSession;
 pub use login::LoginApi;
@@ -41,6 +43,25 @@ use crate::context::{ApiContext, RequestOptions};
 use crate::error::Result;
 use crate::models::Credential;
 use crate::versioning::Platform;
+
+/// Some services repeat a business code inside `req_N.data`. Check it before
+/// decoding success-only fields, and preserve the common auth/rate-limit mapping.
+pub(crate) fn require_data_code(
+    data: &Value,
+    key: &'static str,
+    stage: &'static str,
+) -> Result<()> {
+    if let Some(value) = data.get(key) {
+        let code = value.as_i64().ok_or_else(|| crate::QmError::Protocol {
+            stage,
+            message: format!("invalid {key}"),
+        })?;
+        if code != 0 {
+            return Err(crate::reply::map_cgi_code(code, &Value::Null));
+        }
+    }
+    Ok(())
+}
 
 /// API 模块基类.
 #[derive(Clone)]

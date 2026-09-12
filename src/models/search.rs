@@ -1,6 +1,6 @@
 //! Search API 返回模型定义 (对应 Python 端 `models/search.py`).
 
-use serde::Deserialize;
+use serde::{de::Error as _, Deserialize, Deserializer};
 use serde_json::Value;
 
 use super::base::{Album, Singer, Song, SongList, MV};
@@ -91,6 +91,90 @@ pub struct SongListSearch {
     pub base: SongList,
     pub nickname: String,
     pub dirtype: i64,
+}
+
+/// Typed playlist search page. Total is the upstream count, not the number of
+/// usable rows on this page; malformed individual rows are skipped.
+#[derive(Debug, Clone, Default)]
+pub struct SonglistSearchPage {
+    pub total: i64,
+    pub items: Vec<SonglistSearchItem>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct SonglistSearchItem {
+    #[serde(rename = "dissid", deserialize_with = "search_string")]
+    pub id: String,
+    #[serde(rename = "dissname", deserialize_with = "search_string")]
+    pub title: String,
+    #[serde(rename = "nickname", deserialize_with = "search_string")]
+    pub creator: String,
+    #[serde(
+        rename = "logo",
+        alias = "picUrl",
+        alias = "cover",
+        deserialize_with = "search_string"
+    )]
+    pub artwork_url: String,
+    #[serde(
+        rename = "songnum",
+        alias = "songNum",
+        alias = "song_cnt",
+        deserialize_with = "search_count"
+    )]
+    pub track_count: u32,
+}
+
+impl<'de> Deserialize<'de> for SonglistSearchPage {
+    fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Meta {
+            sum: i64,
+        }
+        #[derive(Deserialize)]
+        struct Body {
+            #[serde(default)]
+            item_songlist: Vec<Value>,
+        }
+        #[derive(Deserialize)]
+        struct Wire {
+            meta: Meta,
+            body: Body,
+        }
+        let wire = Wire::deserialize(de)?;
+        if wire.meta.sum < 0 {
+            return Err(D::Error::custom("negative playlist search total"));
+        }
+        Ok(Self {
+            total: wire.meta.sum,
+            items: wire
+                .body
+                .item_songlist
+                .into_iter()
+                .filter_map(|entry| serde_json::from_value(entry).ok())
+                .collect(),
+        })
+    }
+}
+
+fn search_string<'de, D: Deserializer<'de>>(de: D) -> Result<String, D::Error> {
+    Ok(match Value::deserialize(de)? {
+        Value::String(value) => value,
+        Value::Number(value) => value.to_string(),
+        _ => String::new(),
+    })
+}
+
+fn search_count<'de, D: Deserializer<'de>>(de: D) -> Result<u32, D::Error> {
+    Ok(match Value::deserialize(de)? {
+        Value::Number(value) => value
+            .as_u64()
+            .and_then(|value| u32::try_from(value).ok())
+            .unwrap_or_default(),
+        Value::String(value) => value.parse().unwrap_or_default(),
+        _ => 0,
+    })
 }
 
 /// 搜索场景下的歌手模型.

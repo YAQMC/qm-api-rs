@@ -87,3 +87,36 @@ jsonpath_model!(TopDetailResponse {
     ext_info_list: "$.extInfoList" => Vec<Value>,
     index_info_list: "$.indexInfoList" => Vec<Value>,
 });
+
+/// Web chart response; this is a different upstream service from `get_detail`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct WebTopDetailResponse {
+    #[serde(rename = "data")]
+    pub info: WebTopSummary,
+    #[serde(rename = "songInfoList")]
+    pub songs: Vec<Song>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct WebTopSummary {
+    pub title: String,
+    pub intro: String,
+    #[serde(rename = "updateTime")]
+    pub update_time: String,
+    #[serde(rename = "topAlbumURL")]
+    pub artwork: String,
+    #[serde(rename = "frontPicUrl")]
+    pub front_artwork: String,
+    #[serde(rename = "headPicUrl")]
+    pub head_artwork: String,
+    #[serde(rename = "magicColor")]
+    pub magic_color: Option<ChartColor>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ChartColor {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+}

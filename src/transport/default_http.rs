@@ -68,6 +68,9 @@ impl ReqwestApiTransport {
         let mut current_url = start_url.clone();
         let mut method = request.method;
         let mut headers = request.headers.clone();
+        let explicit_cookies = headers
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("cookie"));
         let mut body = request.body.clone();
         let mut hops = 0_usize;
 
@@ -97,8 +100,23 @@ impl ReqwestApiTransport {
                         .join(&location)
                         .map_err(|e| QmError::ValueError(format!("invalid redirect: {e}")))?;
                     self.validate(&next)?;
-                    if !same_origin(&current_url, &next) {
+                    let cross_origin = !same_origin(&current_url, &next);
+                    if cross_origin
+                        && matches!(status, 307 | 308)
+                        && (!matches!(&body, HttpBody::Empty) || has_secret_headers(&headers))
+                    {
+                        return Err(QmError::network_kind(
+                            NetworkErrorKind::Redirect,
+                            "cross-origin redirect would preserve authenticated request content",
+                        ));
+                    }
+                    if cross_origin {
                         strip_secret_headers(&mut headers);
+                        if explicit_cookies {
+                            // Stripping caller cookies must not reactivate the
+                            // transport's ambient login jar on the next hop.
+                            headers.push(("Cookie".into(), String::new()));
+                        }
                     }
                     if redirects_as_get(status, method) {
                         method = HttpMethod::Get;
@@ -301,4 +319,12 @@ fn strip_secret_headers(headers: &mut Vec<(String, String)>) {
             && !k.eq_ignore_ascii_case("authorization")
             && !k.eq_ignore_ascii_case("x-cos-security-token")
     });
+}
+
+fn has_secret_headers(headers: &[(String, String)]) -> bool {
+    headers.iter().any(|(name, _)| {
+        name.eq_ignore_ascii_case("cookie")
+            || name.eq_ignore_ascii_case("authorization")
+            || name.eq_ignore_ascii_case("x-cos-security-token")
+    })
 }

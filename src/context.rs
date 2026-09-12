@@ -543,6 +543,15 @@ impl ApiContext {
             Vec::new(),
         );
         let mut headers = merge_cookie_headers(headers, cookies);
+        // CGI identity comes exclusively from the captured Credential. An
+        // explicit empty Cookie also prevents reqwest's login jar from adding
+        // an unrelated session to anonymous / logged-out requests.
+        if !headers
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("cookie"))
+        {
+            headers.push(("Cookie".into(), String::new()));
+        }
         ensure_yqq_cgi_headers(url, &mut headers);
         headers
     }
@@ -1344,6 +1353,89 @@ mod tests {
         let drift = serde_json::json!({ "result": null, "totalMap": {} });
         let parsed: crate::models::song::GetSheetResponse = serde_json::from_value(drift).unwrap();
         assert!(parsed.result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cgi_credentials_do_not_inherit_the_http_login_cookie_jar() {
+        use axum::{http::HeaderMap, routing::get};
+
+        let cookies = Arc::new(Mutex::new(Vec::<String>::new()));
+        let capture = |headers: HeaderMap, cookies: &Mutex<Vec<String>>| {
+            cookies.lock().unwrap().push(
+                headers
+                    .get("cookie")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("")
+                    .to_owned(),
+            );
+        };
+        let base = spawn_mock(
+            "/cgi-bin/musicu.fcg",
+            get({
+                let cookies = cookies.clone();
+                move |headers: HeaderMap| {
+                    capture(headers, &cookies);
+                    async {
+                        (
+                            [("set-cookie", "qm_keyst=synthetic-jar-token; Path=/")],
+                            "seed",
+                        )
+                    }
+                }
+            })
+            .post({
+                let cookies = cookies.clone();
+                move |headers: HeaderMap| {
+                    capture(headers, &cookies);
+                    async { r#"{"code":0,"req_0":{"code":0,"data":{}}}"# }
+                }
+            }),
+        )
+        .await;
+        let mut ctx = ApiContext::new(None, Some(Platform::Web)).unwrap();
+        ctx.cgi_base_url = format!("{base}/cgi-bin");
+        ctx.set_credential(Credential {
+            musicid: 10001,
+            musickey: "synthetic-current-token".into(),
+            ..Default::default()
+        });
+        // Generic login HTTP still needs its session cookies. Prove this is a
+        // populated real jar, not a mock that never supported cookies.
+        for _ in 0..2 {
+            ctx.request_http_raw(
+                HttpMethod::Get,
+                &format!("{base}/cgi-bin/musicu.fcg"),
+                &crate::client::HttpOptions::default(),
+            )
+            .await
+            .unwrap();
+        }
+        ctx.request_cgi(
+            "fixture",
+            "read",
+            json!({}),
+            &RequestOptions {
+                credential: Some(Credential::default()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        ctx.request_cgi("fixture", "read", json!({}), &RequestOptions::default())
+            .await
+            .unwrap();
+        ctx.set_credential(Credential::default());
+        ctx.request_cgi("fixture", "read", json!({}), &RequestOptions::default())
+            .await
+            .unwrap();
+
+        let seen = cookies.lock().unwrap();
+        assert_eq!(seen.len(), 5);
+        assert!(seen[1].contains("synthetic-jar-token"));
+        assert!(seen[2].is_empty(), "anonymous CGI inherited cookies");
+        assert!(seen[3].contains("synthetic-current-token"));
+        assert!(!seen[3].contains("synthetic-jar-token"));
+        assert!(seen[4].is_empty(), "logged-out CGI inherited cookies");
     }
 
     #[tokio::test]

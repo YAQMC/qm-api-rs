@@ -43,6 +43,17 @@ impl SonglistApi {
         tag: bool,
         userinfo: bool,
     ) -> Result<GetSonglistDetailResponse> {
+        let begin = page
+            .checked_sub(1)
+            .filter(|offset| {
+                *offset >= 0
+                    && num > 0
+                    && songlist_id >= 0
+                    && dirid >= 0
+                    && (songlist_id > 0 || dirid > 0)
+            })
+            .and_then(|offset| num.checked_mul(offset))
+            .ok_or_else(|| QmError::ValueError("invalid songlist identity or pagination".into()))?;
         let data = self
             .base
             .cgi(
@@ -52,7 +63,7 @@ impl SonglistApi {
                     "disstid": songlist_id,
                     "dirid": dirid,
                     "tag": tag,
-                    "song_begin": num * (page - 1),
+                    "song_begin": begin,
                     "song_num": num,
                     "userinfo": userinfo,
                     "orderlist": true,
@@ -61,7 +72,32 @@ impl SonglistApi {
                 RequestOptions::default(),
             )
             .await?;
-        Ok(serde_json::from_value(data)?)
+        super::require_data_code(&data, "code", "songlist.detail")?;
+        super::require_data_code(&data, "subcode", "songlist.detail")?;
+        if !data
+            .get("songlist")
+            .or_else(|| data.get("songs"))
+            .is_some_and(Value::is_array)
+        {
+            return Err(QmError::Protocol {
+                stage: "songlist.detail",
+                message: "missing or invalid song list".into(),
+            });
+        }
+        let response: GetSonglistDetailResponse = serde_json::from_value(data)?;
+        if response.total < 0
+            || response.size < 0
+            || response.hasmore < 0
+            || (songlist_id > 0
+                && response.info.base.id > 0
+                && response.info.base.id != songlist_id)
+        {
+            return Err(QmError::Protocol {
+                stage: "songlist.detail",
+                message: "invalid songlist metadata or mismatched identity".into(),
+            });
+        }
+        Ok(response)
     }
 
     /// 创建歌单.

@@ -9,6 +9,33 @@
 
 ## 通用能力
 
+### Web 目录与推荐
+
+以下方法在库内固定 Web 请求信封，调用方不需要构造 QQ URL、module/method 或原始响应层级。
+它们不等同于同名 Android 服务；原有方法继续保留。
+
+| 入口 | 参数 | 返回 |
+| --- | --- | --- |
+| `client.discovery.categories` | 无 | 分类卡片，含编码后的 `area_key` |
+| `client.discovery.podcasts` | 无 | 播客卡片 |
+| `client.discovery.new_mvs` | offset、limit（1–100） | MV 卡片，时长单位为秒 |
+| `client.discovery.featured` | 无 | 焦点卡片 |
+| `client.discovery.area` | `area_key` | 区域标题、楼层与类型化卡片 |
+| `client.top.get_web_detail` | top_id、offset、limit（1–100）、period | 榜单元数据与歌曲 |
+| `client.recommend.get_web_home_feed` | page（从 1 开始）、seen_shelves、cached_shelf_ids、显式 Credential | 个性化 Feed 楼层 |
+| `client.recommend.get_web_songlists` | offset、limit（1–100） | 公共推荐歌单摘要 |
+| `client.recommend.get_web_newsongs` | kind（上游新歌类型） | 公共新歌列表 |
+| `client.search.search_songlists` | keyword、num、page（从 1 开始） | Android 歌单搜索分页，兼容数字/字符串字段 |
+
+个性化 Web Feed 必须显式提供凭据，不修改或继承 Client 的默认账户。上述公共 Web 方法
+显式使用匿名身份，即使 Client 默认平台为 Android 或已经登录也不带入该账户。
+CGI 的空 Cookie header 是隔离信号，自定义 transport 不得移除它再从 Cookie jar 补登录信息。
+
+Web Discovery 与推荐区分合法空列表、未知卡片类型和畸形数据：未知类型保留为 `Other`；
+缺失列表或畸形条目返回错误，不转为空成功。歌单搜索兼容方法允许跳过单个非对象条目，
+但保留上游 `total`，它不等于当前页有效条目数量。
+封面地址属于元数据，不代表下载许可；宿主仍需校验 origin、重定向和资源大小。
+
 ### 批量 CGI 请求
 
 多个请求合并为一次 `req_0..req_N` 调用，减少网络往返（对应参考库 `client.gather`）：

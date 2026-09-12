@@ -133,6 +133,7 @@ pub struct AlbumBrief {
     pub album_type: String,
     #[serde(alias = "singerName")]
     pub singer_name: String,
+    #[serde(deserialize_with = "null_as_default")]
     pub tags: Vec<String>,
 }
 
@@ -280,11 +281,15 @@ jsonpath_model!(SingerSongListResponse {
     song_list: "$.songList[*].songInfo" => Vec<Song>,
 });
 
-jsonpath_model!(SingerAlbumListResponse {
-    singer_mid: "$.singerMid" => String,
-    total: "$.total" => i64,
-    album_list: "$.albumList" => Vec<AlbumBrief>,
-});
+/// A malformed row must not silently erase an entire album page.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SingerAlbumListResponse {
+    pub singer_mid: String,
+    pub total: i64,
+    #[serde(default, deserialize_with = "null_as_default")]
+    pub album_list: Vec<AlbumBrief>,
+}
 
 jsonpath_model!(SingerMvListResponse {
     total: "$.total" => i64,

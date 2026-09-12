@@ -155,6 +155,50 @@ impl SearchApi {
         searchid: Option<&str>,
         highlight: bool,
     ) -> Result<SearchByTypeResponse> {
+        let data = self
+            .search_by_type_data(
+                keyword,
+                search_type,
+                num,
+                page,
+                selectors,
+                searchid,
+                highlight,
+            )
+            .await?;
+        Ok(serde_json::from_value(data)?)
+    }
+
+    /// Search playlists without losing valid rows when upstream scalar types vary.
+    /// The request uses the same Android envelope as `search_by_type`.
+    pub async fn search_songlists(
+        &self,
+        keyword: &str,
+        num: i64,
+        page: i64,
+    ) -> Result<SonglistSearchPage> {
+        if keyword.trim().is_empty() || num <= 0 || page <= 0 {
+            return Err(crate::QmError::ValueError(
+                "invalid playlist search pagination".into(),
+            ));
+        }
+        let data = self
+            .search_by_type_data(keyword, SearchType::Songlist, num, page, &[], None, true)
+            .await?;
+        Ok(serde_json::from_value(data)?)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn search_by_type_data(
+        &self,
+        keyword: &str,
+        search_type: SearchType,
+        num: i64,
+        page: i64,
+        selectors: &[SearchSelector],
+        searchid: Option<&str>,
+        highlight: bool,
+    ) -> Result<Value> {
         let selector_map: Value = selectors
             .iter()
             .map(|s| (s.r#type.to_string(), Value::from(s.id)))
@@ -182,16 +226,14 @@ impl SearchApi {
         });
         let mut opts = RequestOptions::default();
         opts.platform = Some(Platform::Android);
-        let data = self
-            .base
+        self.base
             .cgi(
                 "music.search.SearchCgiService",
                 "DoSearchForQQMusicMobile",
                 param,
                 opts,
             )
-            .await?;
-        Ok(serde_json::from_value(data)?)
+            .await
     }
 
     /// 类型搜索并提取当前分类下的条目.

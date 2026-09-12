@@ -9,7 +9,9 @@ use crate::context::RequestOptions;
 use crate::error::{QmError, Result};
 use crate::models::recommend::*;
 use crate::models::Credential;
+use crate::models::{discovery::FeedShelf, Song};
 use crate::transport::HttpMethod;
+use serde::Deserialize;
 
 const MAX_RECOMMEND_BATCH: u32 = 30;
 const MAX_RECOMMEND_SEED_IDS: usize = 100;
@@ -28,6 +30,115 @@ impl RecommendApi {
         RecommendApi {
             base: ApiModule::new(context),
         }
+    }
+
+    /// Personalized web feed, bound to one explicit credential snapshot. It
+    /// does not mutate or inherit the Client's default account / platform.
+    pub async fn get_web_home_feed(
+        &self,
+        page: u32,
+        seen_shelves: u32,
+        cached_shelf_ids: &[String],
+        credential: &Credential,
+    ) -> Result<Vec<FeedShelf>> {
+        if page == 0
+            || cached_shelf_ids.len() > 100
+            || cached_shelf_ids
+                .iter()
+                .any(|id| id.is_empty() || id.len() > 64 || id.chars().any(char::is_control))
+        {
+            return Err(QmError::ValueError("invalid web feed pagination".into()));
+        }
+        #[derive(Deserialize)]
+        struct Response {
+            v_shelf: Vec<FeedShelf>,
+        }
+        let mut options = super::discovery::anonymous_web_read();
+        options.credential = Some(credential.clone());
+        options.require_login = true;
+        let data = self
+            .base
+            .cgi(
+                "music.recommend.RecommendFeed",
+                "get_recommend_feed",
+                json!({"direction":0,"page":page,"s_num":seen_shelves,"v_cache":cached_shelf_ids}),
+                options,
+            )
+            .await?;
+        super::require_data_code(&data, "retcode", "recommend.web.home")?;
+        let response: Response = serde_json::from_value(data)?;
+        Ok(response.v_shelf)
+    }
+
+    /// Public web playlist recommendations, independent of the logged-in account.
+    pub async fn get_web_songlists(
+        &self,
+        offset: u32,
+        limit: u32,
+    ) -> Result<Vec<WebRecommendedSonglist>> {
+        if !(1..=100).contains(&limit) {
+            return Err(QmError::ValueError(
+                "web songlist limit must be between 1 and 100".into(),
+            ));
+        }
+        #[derive(Deserialize)]
+        struct Playlist {
+            basic: WebRecommendedSonglist,
+        }
+        #[derive(Deserialize)]
+        struct Item {
+            #[serde(rename = "Playlist")]
+            playlist: Playlist,
+        }
+        #[derive(Deserialize)]
+        struct Response {
+            #[serde(rename = "List")]
+            items: Vec<Item>,
+        }
+        let data = self
+            .base
+            .cgi(
+                "music.playlist.PlaylistSquare",
+                "GetRecommendFeed",
+                json!({"From":offset,"Size":limit}),
+                super::discovery::anonymous_web_read(),
+            )
+            .await?;
+        let response: Response = serde_json::from_value(data)?;
+        Ok(response
+            .items
+            .into_iter()
+            .map(|item| item.playlist.basic)
+            .collect())
+    }
+
+    /// Public new-song feed using the web envelope, not the Client's platform.
+    pub async fn get_web_newsongs(&self, kind: u32) -> Result<Vec<Song>> {
+        #[derive(Deserialize)]
+        struct Response {
+            songlist: Vec<Song>,
+        }
+        let data = self
+            .base
+            .cgi(
+                "newsong.NewSongServer",
+                "get_new_song_info",
+                json!({"type":kind}),
+                super::discovery::anonymous_web_read(),
+            )
+            .await?;
+        let response: Response = serde_json::from_value(data)?;
+        if response
+            .songlist
+            .iter()
+            .any(|song| song.mid.trim().is_empty())
+        {
+            return Err(QmError::Protocol {
+                stage: "recommend.web.newsongs",
+                message: "song requires a MID".into(),
+            });
+        }
+        Ok(response.songlist)
     }
 
     /// 获取首页推荐 Feed.

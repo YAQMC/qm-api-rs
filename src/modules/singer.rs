@@ -291,12 +291,17 @@ impl SingerApi {
         num: i64,
         page: i64,
     ) -> Result<SingerAlbumListResponse> {
+        let begin = page
+            .checked_sub(1)
+            .filter(|offset| *offset >= 0 && num > 0 && !mid.trim().is_empty())
+            .and_then(|offset| offset.checked_mul(num))
+            .ok_or_else(|| crate::QmError::ValueError("invalid artist album pagination".into()))?;
         let data = self
             .base
             .cgi(
                 "music.musichallAlbum.AlbumListServer",
                 "GetAlbumList",
-                json!({ "singerMid": mid, "order": 1, "number": num, "begin": (page - 1) * num }),
+                json!({ "singerMid": mid, "order": 1, "number": num, "begin": begin }),
                 RequestOptions::default(),
             )
             .await?;

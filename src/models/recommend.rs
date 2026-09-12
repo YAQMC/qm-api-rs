@@ -6,6 +6,51 @@ use serde_json::Value;
 use super::base::{Song, SongList};
 use crate::jsonpath_model;
 
+/// Web playlist-square metadata. Wire aliases and nested artwork are decoded
+/// here so hosts do not need to interpret `Playlist.basic`.
+#[derive(Debug, Clone)]
+pub struct WebRecommendedSonglist {
+    pub id: i64,
+    pub title: String,
+    pub description: String,
+    pub cover_url: String,
+    pub creator: String,
+}
+
+impl<'de> Deserialize<'de> for WebRecommendedSonglist {
+    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        let raw = Value::deserialize(de)?;
+        let id = ["tid", "dissid", "id"]
+            .into_iter()
+            .find_map(|key| {
+                raw[key]
+                    .as_i64()
+                    .or_else(|| raw[key].as_str()?.parse().ok())
+            })
+            .filter(|id| *id > 0)
+            .ok_or_else(|| {
+                serde::de::Error::custom("recommended playlist requires a positive id")
+            })?;
+        let title = raw["dissname"]
+            .as_str()
+            .or_else(|| raw["title"].as_str())
+            .ok_or_else(|| {
+                serde::de::Error::custom("recommended playlist requires a text title")
+            })?;
+        Ok(Self {
+            id,
+            title: title.to_owned(),
+            description: raw["desc"].as_str().unwrap_or_default().to_owned(),
+            cover_url: super::discovery::card_cover(&raw),
+            creator: raw["creator"]["nick"]
+                .as_str()
+                .or_else(|| raw["creator_nick"].as_str())
+                .unwrap_or_default()
+                .to_owned(),
+        })
+    }
+}
+
 /// 当前登录账号的“今日私享”歌单入口.
 ///
 /// `songlist_id` 是账号相关的临时目录 ID；调用方应将其交给

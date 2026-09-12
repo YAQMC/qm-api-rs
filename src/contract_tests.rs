@@ -327,6 +327,157 @@ async fn recommend_home_feed_contract() {
 }
 
 #[tokio::test]
+async fn playlist_search_compatibility_contract() {
+    let base = spawn_strict(Expect {
+        module: "music.search.SearchCgiService",
+        method: "DoSearchForQQMusicMobile",
+        param_ok: |p| p["query"] == "playlist" && p["search_type"] == 3
+            && p["num_per_page"] == 8 && p["page_num"] == 2
+            && p["selectors"] == json!({}) && p["vec_selectors"] == json!([]),
+        comm_ok: android_comm_ok,
+        body: r#"{"code":0,"req_0":{"code":0,"data":{
+            "meta":{"sum":20},"body":{"item_songlist":[
+                {"dissid":"7654321","dissname":"First","songnum":"42","nickname":"Curator","logo":"https://y.gtimg.cn/fixture.jpg"},
+                false,
+                {"dissid":7654322,"dissname":"Second","songNum":12,"picUrl":"cover.jpg"}
+            ]}
+        }}}"#,
+    }).await;
+    let api = SearchApi::new(Arc::new(android_ctx(&base)));
+    let page = api.search_songlists("playlist", 8, 2).await.unwrap();
+    assert_eq!(page.total, 20);
+    assert_eq!(page.items.len(), 2);
+    assert_eq!(page.items[0].id, "7654321");
+    assert_eq!(page.items[0].track_count, 42);
+    assert_eq!(page.items[0].creator, "Curator");
+    assert_eq!(page.items[1].id, "7654322");
+    assert_eq!(page.items[1].track_count, 12);
+    assert_eq!(page.items[1].artwork_url, "cover.jpg");
+}
+
+#[tokio::test]
+async fn artist_album_null_tags_contract() {
+    let base = spawn_strict(Expect {
+        module: "music.musichallAlbum.AlbumListServer",
+        method: "GetAlbumList",
+        param_ok: |p| {
+            p["singerMid"] == "ARTIST" && p["order"] == 1 && p["number"] == 8 && p["begin"] == 8
+        },
+        comm_ok: web_comm_ok,
+        body: r#"{"code":0,"req_0":{"code":0,"data":{
+            "singerMid":"ARTIST","total":2,"albumList":[
+                {"mid":"ALBUM_A","name":"Album A","tags":null},
+                {"mid":"ALBUM_B","name":"Album B","tags":["studio"]}
+            ]
+        }}}"#,
+    })
+    .await;
+    let api = crate::modules::singer::SingerApi::new(Arc::new(web_ctx(&base)));
+    let page = api.get_album_list("ARTIST", 8, 2).await.unwrap();
+    assert_eq!(page.singer_mid, "ARTIST");
+    assert_eq!(page.total, 2);
+    assert_eq!(page.album_list.len(), 2);
+    assert!(page.album_list[0].tags.is_empty());
+    assert_eq!(page.album_list[1].tags, ["studio"]);
+}
+
+#[test]
+fn catalog_compatibility_decoders_reject_malformed_pages() {
+    use crate::models::{search::SonglistSearchPage, singer::SingerAlbumListResponse};
+    for value in [
+        json!({}),
+        json!({"meta":{"sum":-1},"body":{}}),
+        json!({"meta":{"sum":1},"body":{"item_songlist":{}}}),
+    ] {
+        assert!(serde_json::from_value::<SonglistSearchPage>(value).is_err());
+    }
+    for value in [
+        json!({}),
+        json!({"singerMid":"ARTIST","total":1,"albumList":[{"tags":false}]}),
+        json!({"singerMid":"ARTIST","total":1,"albumList":{}}),
+    ] {
+        assert!(serde_json::from_value::<SingerAlbumListResponse>(value).is_err());
+    }
+    let empty: SingerAlbumListResponse =
+        serde_json::from_value(json!({"singerMid":"ARTIST","total":0,"albumList":null})).unwrap();
+    assert!(empty.album_list.is_empty());
+}
+
+#[tokio::test]
+async fn catalog_pagination_rejects_invalid_input_without_network() {
+    // No listener exists at this URL; only preflight validation can pass.
+    let ctx = Arc::new(web_ctx("http://127.0.0.1:1"));
+    let singer = crate::modules::singer::SingerApi::new(ctx.clone());
+    let search = SearchApi::new(ctx.clone());
+    let songlist = SonglistApi::new(ctx);
+    for (size, page) in [(0, 1), (1, 0), (-1, 1), (2, i64::MAX), (1, i64::MIN)] {
+        assert!(matches!(
+            singer.get_album_list("ARTIST", size, page).await,
+            Err(crate::QmError::ValueError(_))
+        ));
+    }
+    for (size, page) in [(0, 1), (1, 0), (-1, 1), (1, -1)] {
+        assert!(matches!(
+            search.search_songlists("query", size, page).await,
+            Err(crate::QmError::ValueError(_))
+        ));
+    }
+    for (id, dir, size, page) in [
+        (0, 0, 10, 1),
+        (-1, 201, 10, 1),
+        (123, -1, 10, 1),
+        (123, 0, 0, 1),
+        (123, 0, 10, 0),
+        (123, 0, 2, i64::MAX),
+        (123, 0, 1, i64::MIN),
+    ] {
+        assert!(matches!(
+            songlist
+                .get_detail(id, dir, size, page, false, true, true)
+                .await,
+            Err(crate::QmError::ValueError(_))
+        ));
+    }
+}
+
+#[tokio::test]
+async fn songlist_typed_detail_rejects_bad_pages_and_preserves_business_codes() {
+    for body in [
+        r#"{"code":0,"req_0":{"code":0,"data":{}}}"#,
+        r#"{"code":0,"req_0":{"code":0,"data":{"songlist":{},"total_song_num":0}}}"#,
+        r#"{"code":0,"req_0":{"code":0,"data":{"songlist":[],"total_song_num":-1}}}"#,
+        r#"{"code":0,"req_0":{"code":0,"data":{"songlist":[],"dirinfo":{"tid":999}}}}"#,
+    ] {
+        let base = spawn_strict(Expect {
+            module: "music.srfDissInfo.DissInfo",
+            method: "CgiGetDiss",
+            param_ok: |p| p["disstid"] == 123 && p["song_begin"] == 10,
+            comm_ok: web_comm_ok,
+            body,
+        })
+        .await;
+        let api = SonglistApi::new(Arc::new(web_ctx(&base)));
+        assert!(matches!(
+            api.get_detail(123, 0, 10, 2, true, false, false).await,
+            Err(crate::QmError::Protocol { .. })
+        ));
+    }
+    let base = spawn_strict(Expect {
+        module: "music.srfDissInfo.DissInfo",
+        method: "CgiGetDiss",
+        param_ok: |_| true,
+        comm_ok: web_comm_ok,
+        body: r#"{"code":0,"req_0":{"code":0,"data":{"subcode":104003}}}"#,
+    })
+    .await;
+    let api = SonglistApi::new(Arc::new(web_ctx(&base)));
+    assert!(matches!(
+        api.get_detail(123, 0, 10, 1, true, false, false).await,
+        Err(crate::QmError::CgiApi { code: 104003, .. })
+    ));
+}
+
+#[tokio::test]
 async fn recommend_guess_request_contract() {
     let base = spawn_strict(Expect {
         module: "music.radioProxy.MbTrackRadioSvr",

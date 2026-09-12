@@ -14,6 +14,31 @@ pub struct TopApi {
 }
 
 impl TopApi {
+    /// Web chart detail, preserving its period parameter and web comm envelope.
+    pub async fn get_web_detail(
+        &self,
+        top_id: u64,
+        offset: u32,
+        limit: u32,
+        period: &str,
+    ) -> Result<WebTopDetailResponse> {
+        if top_id == 0 || !(1..=100).contains(&limit) || period.len() > 64 {
+            return Err(crate::QmError::ValueError(
+                "invalid web chart request".into(),
+            ));
+        }
+        let data = self
+            .base
+            .cgi(
+                "musicToplist.ToplistInfoServer",
+                "GetDetail",
+                json!({"topId":top_id,"offset":offset,"num":limit,"period":period}),
+                super::discovery::anonymous_web_read(),
+            )
+            .await?;
+        Ok(serde_json::from_value(data)?)
+    }
+
     pub(crate) fn new(context: std::sync::Arc<crate::context::ApiContext>) -> Self {
         TopApi {
             base: ApiModule::new(context),

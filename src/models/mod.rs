@@ -3,6 +3,7 @@
 pub mod album;
 pub mod base;
 pub mod comment;
+pub mod discovery;
 pub mod helper;
 pub mod login;
 pub mod lyric;
