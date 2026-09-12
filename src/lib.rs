@@ -41,6 +41,7 @@
 //! - `Client::helper` —— 上传等辅助接口
 //! - `Client::private_message` —— 私信
 
+pub mod account;
 mod client;
 mod context;
 #[cfg(test)]
