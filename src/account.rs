@@ -18,6 +18,40 @@ pub enum AccountRead {
     RecentlyPlayed,
 }
 
+/// Typed account mutations supported by the provider boundary.
+#[derive(Clone, Debug)]
+pub enum AccountWrite {
+    FavoriteSong {
+        add: bool,
+        song_id: i64,
+        song_type: i64,
+    },
+    PlaylistTracks {
+        add: bool,
+        dir_id: i64,
+        tid: i64,
+        songs: Vec<(i64, i64)>,
+    },
+    CreatePlaylist {
+        name: String,
+    },
+    DeletePlaylist {
+        dir_id: i64,
+    },
+    EditPlaylist {
+        dir_id: i64,
+        mask: i64,
+        name: String,
+        description: String,
+        picture_url: String,
+        tag_list: String,
+    },
+    CollectPlaylist {
+        collect: bool,
+        playlist_id: i64,
+    },
+}
+
 /// Validated pagination information with lossless legacy metadata.
 pub struct AccountPage {
     envelope: Value,
@@ -176,6 +210,123 @@ pub async fn write_legacy(
     options.preserve_bool = true;
     options.cancellation = cancellation;
     client.request_cgi(module, method, param, &options).await
+}
+
+/// Execute a typed account mutation. Endpoint names and wire parameters are
+/// selected exclusively inside qm-api-rs.
+pub async fn write(
+    client: &Client,
+    credential: &Credential,
+    operation: AccountWrite,
+    cancellation: CancellationToken,
+) -> Result<crate::CgiReply<Value>> {
+    let (module, method, param) = operation.into_wire()?;
+    write_legacy(client, credential, module, method, param, cancellation).await
+}
+
+impl AccountWrite {
+    fn into_wire(self) -> Result<(&'static str, &'static str, Value)> {
+        match self {
+            Self::FavoriteSong {
+                add,
+                song_id,
+                song_type,
+            } => {
+                if song_id <= 0 || song_type < 0 {
+                    return Err(QmError::ValueError("invalid favorite song identity".into()));
+                }
+                Ok((
+                    "music.musicasset.PlaylistDetailWrite",
+                    if add { "AddSonglist" } else { "DelSonglist" },
+                    json!({"dirId": 201, "tid": 0, "bFmtUtf8": true,
+                        "v_songInfo": [{"songId": song_id, "songType": song_type}]}),
+                ))
+            }
+            Self::PlaylistTracks {
+                add,
+                dir_id,
+                tid,
+                songs,
+            } => {
+                if dir_id <= 0 || tid < 0 || songs.is_empty() || songs.len() > 100 {
+                    return Err(QmError::ValueError(
+                        "invalid playlist track mutation".into(),
+                    ));
+                }
+                if songs
+                    .iter()
+                    .any(|(song_id, song_type)| *song_id <= 0 || *song_type < 0)
+                {
+                    return Err(QmError::ValueError("invalid playlist song identity".into()));
+                }
+                Ok((
+                    "music.musicasset.PlaylistDetailWrite",
+                    if add { "AddSonglist" } else { "DelSonglist" },
+                    json!({"dirId": dir_id, "tid": tid, "bFmtUtf8": true,
+                        "v_songInfo": songs.into_iter().map(|(song_id, song_type)|
+                            json!({"songId": song_id, "songType": song_type})).collect::<Vec<_>>() }),
+                ))
+            }
+            Self::CreatePlaylist { name } => {
+                if name.is_empty() || name.chars().count() > 128 {
+                    return Err(QmError::ValueError("invalid playlist name".into()));
+                }
+                Ok((
+                    "music.musicasset.PlaylistBaseWrite",
+                    "AddPlaylist",
+                    json!({"dirName": name}),
+                ))
+            }
+            Self::DeletePlaylist { dir_id } => {
+                if dir_id <= 0 {
+                    return Err(QmError::ValueError("invalid playlist id".into()));
+                }
+                Ok((
+                    "music.musicasset.PlaylistBaseWrite",
+                    "DelPlaylist",
+                    json!({"dirId": dir_id}),
+                ))
+            }
+            Self::EditPlaylist {
+                dir_id,
+                mask,
+                name,
+                description,
+                picture_url,
+                tag_list,
+            } => {
+                if dir_id <= 0 || mask <= 0 || name.is_empty() || name.chars().count() > 128 {
+                    return Err(QmError::ValueError("invalid playlist edit".into()));
+                }
+                Ok((
+                    "music.musicasset.PlaylistBaseWrite",
+                    "EditPlaylist",
+                    json!({
+                        "dirId": dir_id, "mask": mask, "dirNewName": name,
+                        "dirNewDesc": description, "dirNewPicUrl": picture_url,
+                        "dirNewTagList": tag_list
+                    }),
+                ))
+            }
+            Self::CollectPlaylist {
+                collect,
+                playlist_id,
+            } => {
+                if playlist_id <= 0 {
+                    return Err(QmError::ValueError("invalid playlist id".into()));
+                }
+                Ok((
+                    "music.musicasset.PlaylistFavWrite",
+                    if collect {
+                        "FavPlaylist"
+                    } else {
+                        "CancelFavPlaylist"
+                    },
+                    json!({"v_playlistId": [playlist_id]}),
+                ))
+            }
+        }
+    }
 }
 
 fn account_write_comm(credential: &Credential) -> Value {
@@ -365,6 +516,57 @@ mod tests {
         let result = parse_page(value, &AccountRead::FavoriteSongs, 0, 10);
         assert!(
             matches!(result, Err(QmError::ApiData(message)) if message == "account page made no progress")
+        );
+    }
+
+    #[tokio::test]
+    async fn write_legacy_rejects_unknown_endpoint_before_transport() {
+        let client = Client::new(None, None).unwrap();
+        let credential = Credential {
+            musicid: 1,
+            musickey: "key".into(),
+            ..Credential::default()
+        };
+        let result = write_legacy(
+            &client,
+            &credential,
+            "music.unknown.Module",
+            "Unknown",
+            json!({}),
+            CancellationToken::new(),
+        )
+        .await;
+        assert!(
+            matches!(result, Err(QmError::ValueError(message)) if message == "unsupported account write endpoint")
+        );
+    }
+
+    #[test]
+    fn typed_write_builds_fixed_favorite_endpoint() {
+        let (module, method, param) = AccountWrite::FavoriteSong {
+            add: true,
+            song_id: 42,
+            song_type: 0,
+        }
+        .into_wire()
+        .unwrap();
+        assert_eq!(module, "music.musicasset.PlaylistDetailWrite");
+        assert_eq!(method, "AddSonglist");
+        assert_eq!(param["dirId"], 201);
+        assert_eq!(param["v_songInfo"][0]["songId"], 42);
+    }
+
+    #[test]
+    fn typed_write_rejects_empty_playlist_mutation() {
+        let result = AccountWrite::PlaylistTracks {
+            add: true,
+            dir_id: 1,
+            tid: 0,
+            songs: Vec::new(),
+        }
+        .into_wire();
+        assert!(
+            matches!(result, Err(QmError::ValueError(message)) if message == "invalid playlist track mutation")
         );
     }
 }
