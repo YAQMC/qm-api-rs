@@ -254,3 +254,59 @@ fn parse_page(
         row_count,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn envelope(data: Value) -> Value {
+        json!({"code": 0, "req": {"code": 0, "data": data}})
+    }
+
+    #[test]
+    fn parse_favorite_page_preserves_rows_and_cursor() {
+        let value = envelope(json!({
+            "song_begin": 0,
+            "total_song_num": 3,
+            "hasmore": 1,
+            "songlist": [{"mid": "a"}, {"mid": "b"}]
+        }));
+        let page = parse_page(value, &AccountRead::FavoriteSongs, 0, 2).unwrap();
+        assert_eq!(page.row_count, 2);
+        assert_eq!(page.total, Some(3));
+        assert_eq!(page.next_offset, Some(2));
+    }
+
+    #[test]
+    fn parse_playlist_page_rejects_foreign_identity() {
+        let value = envelope(json!({
+            "total": 1,
+            "songlist": [{"mid": "a"}],
+            "dirinfo": {"tid": "other"}
+        }));
+        let result = parse_page(
+            value,
+            &AccountRead::PlaylistTracks {
+                tid: "expected".into(),
+            },
+            0,
+            10,
+        );
+        assert!(
+            matches!(result, Err(QmError::ApiData(message)) if message == "playlist identity mismatch")
+        );
+    }
+
+    #[test]
+    fn parse_page_rejects_empty_page_claiming_more() {
+        let value = envelope(json!({
+            "total": 1,
+            "hasmore": true,
+            "songlist": []
+        }));
+        let result = parse_page(value, &AccountRead::FavoriteSongs, 0, 10);
+        assert!(
+            matches!(result, Err(QmError::ApiData(message)) if message == "account page made no progress")
+        );
+    }
+}
