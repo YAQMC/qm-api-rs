@@ -42,6 +42,7 @@
 //! - `Client::private_message` —— 私信
 
 pub mod account;
+pub mod artwork;
 mod client;
 mod context;
 #[cfg(test)]
