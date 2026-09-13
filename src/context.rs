@@ -482,6 +482,7 @@ impl ApiContext {
         let (_, headers, body) = qimei::build_qimei_request(device, &app_version, &sdk_version)?;
         let resp = self
             .execute_transport(TransportRequest {
+                max_response_bytes: None,
                 method: HttpMethod::Post,
                 url: self.qimei_url.clone(),
                 headers,
@@ -860,6 +861,7 @@ impl ApiContext {
         let mut request = TransportRequest::new(method, url);
         request.headers = merge_cookie_headers(headers, cookies);
         request.query = opts.params.clone();
+        request.max_response_bytes = opts.max_response_bytes;
         request.body = body;
         request.timeout = opts.timeout;
         request.retry = opts.retry;

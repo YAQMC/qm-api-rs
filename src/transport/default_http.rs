@@ -131,7 +131,9 @@ impl ReqwestApiTransport {
             }
 
             let response_headers = headers_from_reqwest(response.headers());
-            let body_bytes = self.collect_body(response, &request.cancellation).await?;
+            let body_bytes = self
+                .collect_body(response, &request.cancellation, request.max_response_bytes)
+                .await?;
             return Ok(TransportResponse {
                 status,
                 final_url: current_url.to_string(),
@@ -169,15 +171,31 @@ impl ReqwestApiTransport {
 
     async fn collect_body(
         &self,
-        response: reqwest::Response,
+        mut response: reqwest::Response,
         cancellation: &tokio_util::sync::CancellationToken,
+        limit: Option<usize>,
     ) -> Result<Vec<u8>> {
-        tokio::select! {
-            biased;
-            _ = cancellation.cancelled() => Err(QmError::cancelled()),
-            body = response.bytes() => body
-                .map(|b| b.to_vec())
-                .map_err(QmError::map_transport_error),
+        let too_large = || QmError::Protocol {
+            stage: "response-limit",
+            message: "decoded response exceeds byte limit".into(),
+        };
+        if limit.is_some_and(|limit| response.content_length().is_some_and(|n| n > limit as u64)) {
+            return Err(too_large());
+        }
+        let mut bytes = Vec::new();
+        loop {
+            let chunk = tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => return Err(QmError::cancelled()),
+                chunk = response.chunk() => chunk.map_err(QmError::map_transport_error)?,
+            };
+            let Some(chunk) = chunk else {
+                return Ok(bytes);
+            };
+            if limit.is_some_and(|limit| chunk.len() > limit.saturating_sub(bytes.len())) {
+                return Err(too_large());
+            }
+            bytes.extend_from_slice(&chunk);
         }
     }
 }

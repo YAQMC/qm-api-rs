@@ -422,6 +422,18 @@ user.raw_get_collect_album_list(param, credential) -> Value // 收藏专辑列�
 取消都不能证明远端没有产生副作用；宿主应按账户代次和写入语义决定是否执行安全读取对账，
 不能把重新发送写操作当作通用恢复方式。取消之后不发布成功结果，也不撤销已发生的远端操作。
 
+## artwork（图片）
+
+`artwork::album(mid)` 与 `artwork::from_url(url)` 返回 URL 和已知尺寸变体；
+`artwork::download(&client, url, cancellation)` 返回 `DownloadedArtwork`，不接受账户凭据。
+下载只接受已验证 HTTPS 图片 URL，发送显式空 Cookie，不继承 Client 的登录账户；
+禁止重定向并校验最终 URL、成功状态和 `image/*` Content-Type。
+
+默认上限为 5 MiB。`HttpOptions::max_response_bytes` 会传递到 `TransportRequest`，
+默认 transport 在解码后的响应块累计超过上限前停止，不把大响应完整读入内存再拒绝。
+自定义 transport 必须遵守该字段；图片 API 也会复核返回体大小。未设置该字段的既有 API
+保留原来的响应策略。取消及不合格响应不会返回图片成功结果；宿主负责缓存及 UI 映射。
+
 ## login（登录）
 
 ```rust

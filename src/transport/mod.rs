@@ -104,6 +104,9 @@ impl Default for TransportConfig {
 
 /// 一次 HTTP 请求 (库内类型, 不含 reqwest).
 pub struct TransportRequest {
+    /// Implementations must enforce this bound on decoded bytes during collection.
+    /// None preserves the existing endpoint policy.
+    pub max_response_bytes: Option<usize>,
     pub method: HttpMethod,
     pub url: String,
     pub headers: Vec<(String, String)>,
@@ -119,6 +122,7 @@ impl TransportRequest {
     pub fn new(method: HttpMethod, url: impl Into<String>) -> Self {
         Self {
             method,
+            max_response_bytes: None,
             url: url.into(),
             headers: Vec::new(),
             query: Vec::new(),
@@ -135,6 +139,7 @@ impl fmt::Debug for TransportRequest {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let header_names: Vec<&str> = self.headers.iter().map(|(k, _)| k.as_str()).collect();
         f.debug_struct("TransportRequest")
+            .field("max_response_bytes", &self.max_response_bytes)
             .field("method", &self.method)
             .field("url", &self.url)
             .field("header_names", &header_names)
@@ -253,7 +258,9 @@ pub(crate) fn validate_url(url: &url::Url, extra_origins: &[String]) -> Result<(
     if host.is_empty() {
         return Err(crate::QmError::allowlist_denied("<missing-host>"));
     }
-    if url.scheme() == "https" && is_allowed_host(host) {
+    if (url.scheme() == "https" && is_allowed_host(host))
+        || crate::artwork::is_allowed_url(url.as_str())
+    {
         return Ok(());
     }
     let origin = origin_of(url);
@@ -318,6 +325,47 @@ mod tests {
         t
     }
 
+    #[tokio::test]
+    async fn decoded_body_limit_is_enforced_for_length_and_chunked_responses() {
+        use axum::{body::Body, response::Response, routing::get, Router};
+        let hits = Arc::new(AtomicU32::new(0));
+        let count = hits.clone();
+        let app = Router::new()
+            .route("/fixed", get(|| async { "12345678" }))
+            .route(
+                "/chunked",
+                get(move || {
+                    count.fetch_add(1, Ordering::SeqCst);
+                    async {
+                        Response::new(Body::from_stream(futures_util::stream::iter([
+                            Ok::<_, std::convert::Infallible>("1234"),
+                            Ok("5678"),
+                        ])))
+                    }
+                }),
+            );
+        let (base, _) = spawn_router(app).await;
+        let transport = transport_for(&base, TransportConfig::default());
+        for path in ["fixed", "chunked"] {
+            let mut request = TransportRequest::new(HttpMethod::Get, format!("{base}/{path}"));
+            request.max_response_bytes = Some(4);
+            assert!(matches!(
+                transport.execute(request).await,
+                Err(QmError::Protocol {
+                    stage: "response-limit",
+                    ..
+                })
+            ));
+        }
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            1,
+            "an over-limit body must not be retried"
+        );
+        let mut exact = TransportRequest::new(HttpMethod::Get, format!("{base}/fixed"));
+        exact.max_response_bytes = Some(8);
+        assert_eq!(transport.execute(exact).await.unwrap().body, b"12345678");
+    }
     #[test]
     fn configured_origin_requires_https_except_loopback() {
         assert_eq!(

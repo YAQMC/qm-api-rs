@@ -1,8 +1,99 @@
-//! QQ artwork URL and size contracts. These pure helpers do not fetch images.
-//! A host must still enforce redirect, response type and byte-size limits when
-//! downloading and must not attach account credentials to artwork requests.
+//! QQ artwork URL contracts and bounded, anonymous image downloads.
+//! Hosts own caching and presentation; transport implementations must enforce
+//! the request's byte limit while collecting decoded response data.
 
+use crate::{CancellationToken, Client, HttpMethod, HttpOptions, QmError, RedirectMode, Result};
 use url::Url;
+
+pub const MAX_ARTWORK_BYTES: usize = 5 * 1024 * 1024;
+
+pub struct DownloadedArtwork {
+    pub bytes: Vec<u8>,
+    pub mime_type: String,
+}
+
+/// Does not normalize an untrusted request into a different URL. Callers may
+/// use normalize_url for metadata; download accepts only the final HTTPS URL.
+pub async fn download(
+    client: &Client,
+    source: &str,
+    cancellation: CancellationToken,
+) -> Result<DownloadedArtwork> {
+    if cancellation.is_cancelled() {
+        return Err(QmError::cancelled());
+    }
+    if !is_allowed_url(source) {
+        return Err(QmError::ValueError("unsupported artwork URL".into()));
+    }
+    let opts = HttpOptions {
+        headers: vec![
+            ("Referer".into(), "https://y.qq.com/".into()),
+            ("Cookie".into(), String::new()),
+        ],
+        redirects: RedirectMode::None,
+        max_response_bytes: Some(MAX_ARTWORK_BYTES),
+        cancellation: cancellation.clone(),
+        ..HttpOptions::default()
+    };
+    let response = client
+        .context
+        .request_http_raw(HttpMethod::Get, source, &opts)
+        .await?;
+    if cancellation.is_cancelled() {
+        return Err(QmError::cancelled());
+    }
+    // A custom transport must not silently follow redirects despite the policy.
+    if Url::parse(&response.final_url).ok() != Url::parse(source).ok() {
+        return Err(QmError::Protocol {
+            stage: "artwork",
+            message: "unexpected image redirect".into(),
+        });
+    }
+    if response.status != 200 {
+        return Err(QmError::http(
+            response.status,
+            "artwork download failed".into(),
+        ));
+    }
+    if response.body.len() > MAX_ARTWORK_BYTES {
+        return Err(QmError::Protocol {
+            stage: "response-limit",
+            message: "image exceeds byte limit".into(),
+        });
+    }
+    let mut mime_type = None;
+    for (_, value) in response
+        .headers
+        .iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+    {
+        let mime = value
+            .split(';')
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase();
+        let subtype = mime.strip_prefix("image/").filter(|subtype| {
+            !subtype.is_empty()
+                && subtype.bytes().all(|b| {
+                    b.is_ascii_alphanumeric()
+                        || matches!(
+                            b,
+                            b'!' | b'#' | b'$' | b'&' | b'^' | b'_' | b'.' | b'+' | b'-'
+                        )
+                })
+        });
+        if subtype.is_none() || mime_type.as_ref().is_some_and(|prior| prior != &mime) {
+            return Err(QmError::ApiData("invalid image content type".into()));
+        }
+        mime_type = Some(mime);
+    }
+    Ok(DownloadedArtwork {
+        bytes: response.body,
+        mime_type: mime_type
+            .ok_or_else(|| QmError::ApiData("missing image content type".into()))?,
+    })
+}
 
 const ALBUM_SIZES: [u32; 4] = [150, 300, 500, 800];
 const CDN_HOSTS: &[&str] = &[

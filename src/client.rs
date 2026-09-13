@@ -84,6 +84,8 @@ impl From<&CgiOptions> for crate::context::RequestOptions {
 /// `credential: Some(...)`.
 #[derive(Clone)]
 pub struct HttpOptions {
+    /// Limit decoded response bytes while streaming, before allocating the whole body.
+    pub max_response_bytes: Option<usize>,
     pub params: Vec<(String, String)>,
     /// 普通 header 列表, 不含 `reqwest::header::HeaderMap`.
     pub headers: Vec<(String, String)>,
@@ -109,6 +111,7 @@ impl std::fmt::Debug for HttpOptions {
         let body_len = self.body.as_ref().map(Vec::len);
 
         f.debug_struct("HttpOptions")
+            .field("max_response_bytes", &self.max_response_bytes)
             .field("param_keys", &param_keys)
             .field("header_names", &header_names)
             .field("cookie_names", &cookie_names)
@@ -126,6 +129,7 @@ impl std::fmt::Debug for HttpOptions {
 impl Default for HttpOptions {
     fn default() -> Self {
         Self {
+            max_response_bytes: None,
             params: Vec::new(),
             headers: Vec::new(),
             cookies: Vec::new(),
