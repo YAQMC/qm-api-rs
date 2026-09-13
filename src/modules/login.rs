@@ -125,6 +125,106 @@ impl LoginApi {
         }
     }
 
+    /// Build the provider-owned Web OAuth authorization URL.
+    ///
+    /// This is intentionally a pure construction step: it does not open a
+    /// browser, send credentials, or exchange an authorization code. `state`
+    /// must be the fresh 32-character hexadecimal value owned by the caller.
+    pub fn build_oauth_authorize_url(
+        provider: OAuthLoginProvider,
+        state: &str,
+    ) -> Result<url::Url> {
+        Self::build_oauth_authorize_url_for(provider, OAuthPresentation::Desktop, state).and_then(
+            |url| {
+                url.ok_or_else(|| QmError::ApiData("OAuth desktop presentation unavailable".into()))
+            },
+        )
+    }
+
+    /// Build the optional mobile OAuth presentation.
+    ///
+    /// QQ has a mobile authorize endpoint (`display=mobile`); WeChat has no
+    /// distinct mobile URL and therefore returns `Ok(None)`, matching the
+    /// provider's existing behavior. No URL is built for that unsupported
+    /// presentation, so its unused `state` is not validated.
+    pub fn build_oauth_mobile_authorize_url(
+        provider: OAuthLoginProvider,
+        state: &str,
+    ) -> Result<Option<url::Url>> {
+        Self::build_oauth_authorize_url_for(provider, OAuthPresentation::Mobile, state)
+    }
+
+    /// Build one provider/presentation combination without performing I/O.
+    pub fn build_oauth_authorize_url_for(
+        provider: OAuthLoginProvider,
+        presentation: OAuthPresentation,
+        state: &str,
+    ) -> Result<Option<url::Url>> {
+        if provider == OAuthLoginProvider::Wechat && presentation == OAuthPresentation::Mobile {
+            return Ok(None);
+        }
+        if state.len() != 32 || !state.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(QmError::ValueError(
+                "OAuth state must be exactly 32 hexadecimal characters".into(),
+            ));
+        }
+
+        const QQ_CLIENT_ID: &str = "100497308";
+        const QQ_REDIRECT_URI: &str =
+            "https://y.qq.com/portal/wx_redirect.html?login_type=1&surl=https://y.qq.com/";
+        const WECHAT_APP_ID: &str = "wx48db31d50e334801";
+        const WECHAT_REDIRECT_URI: &str =
+            "https://y.qq.com/portal/wx_redirect.html?login_type=2&surl=https://y.qq.com/";
+
+        let mut url = url::Url::parse(match (provider, presentation) {
+            (OAuthLoginProvider::Qq, OAuthPresentation::Desktop) => {
+                "https://graph.qq.com/oauth2.0/show"
+            }
+            (OAuthLoginProvider::Qq, OAuthPresentation::Mobile) => {
+                "https://graph.qq.com/oauth2.0/authorize"
+            }
+            (OAuthLoginProvider::Wechat, _) => "https://open.weixin.qq.com/connect/qrconnect",
+        })
+        .expect("OAuth authorization URL constants are valid");
+        {
+            let mut query = url.query_pairs_mut();
+            match provider {
+                OAuthLoginProvider::Qq => {
+                    query
+                        .append_pair("which", "Login")
+                        .append_pair(
+                            "display",
+                            match presentation {
+                                OAuthPresentation::Desktop => "pc",
+                                OAuthPresentation::Mobile => "mobile",
+                            },
+                        )
+                        .append_pair("response_type", "code")
+                        .append_pair("client_id", QQ_CLIENT_ID)
+                        .append_pair("redirect_uri", QQ_REDIRECT_URI)
+                        .append_pair("scope", "get_user_info,get_app_friends")
+                        .append_pair("state", state);
+                }
+                OAuthLoginProvider::Wechat => {
+                    query
+                        .append_pair("appid", WECHAT_APP_ID)
+                        .append_pair("redirect_uri", WECHAT_REDIRECT_URI)
+                        .append_pair("response_type", "code")
+                        .append_pair("scope", "snsapi_login")
+                        .append_pair("state", state)
+                        .append_pair(
+                            "href",
+                            "https://y.qq.com/mediastyle/music_v17/src/css/popup_wechat.css",
+                        );
+                }
+            }
+        }
+        if provider == OAuthLoginProvider::Wechat {
+            url.set_fragment(Some("wechat_redirect"));
+        }
+        Ok(Some(url))
+    }
+
     /// 检查登录凭证是否已过期.
     pub async fn check_expired(&self, credential: Option<&Credential>) -> Result<bool> {
         let target = credential
@@ -1071,13 +1171,111 @@ fn extract_cookie(headers: &[(String, String)], name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, sync::Mutex};
+    use std::{
+        collections::{BTreeMap, HashMap},
+        sync::Mutex,
+    };
 
     use super::*;
     use crate::{context::ApiContext, mqtt::MqttMessage, QrLoginReason};
 
     fn api() -> LoginApi {
         LoginApi::new(Arc::new(ApiContext::new(None, None).unwrap()))
+    }
+
+    fn query_map(url: &url::Url) -> BTreeMap<String, String> {
+        url.query_pairs()
+            .map(|(key, value)| (key.into_owned(), value.into_owned()))
+            .collect()
+    }
+
+    #[test]
+    fn oauth_authorize_urls_preserve_complete_provider_contracts() {
+        let state = "0123456789abcdef0123456789abcdef";
+        let qq = LoginApi::build_oauth_authorize_url(OAuthLoginProvider::Qq, state).unwrap();
+        assert_eq!(
+            qq.as_str().split('?').next(),
+            Some("https://graph.qq.com/oauth2.0/show")
+        );
+        assert_eq!(
+            query_map(&qq),
+            BTreeMap::from([
+                ("client_id".into(), "100497308".into()),
+                ("display".into(), "pc".into()),
+                (
+                    "redirect_uri".into(),
+                    "https://y.qq.com/portal/wx_redirect.html?login_type=1&surl=https://y.qq.com/"
+                        .into()
+                ),
+                ("response_type".into(), "code".into()),
+                ("scope".into(), "get_user_info,get_app_friends".into()),
+                ("state".into(), state.into()),
+                ("which".into(), "Login".into()),
+            ])
+        );
+
+        let qq_mobile = LoginApi::build_oauth_mobile_authorize_url(OAuthLoginProvider::Qq, state)
+            .unwrap()
+            .unwrap();
+        assert_eq!(qq_mobile.path(), "/oauth2.0/authorize");
+        let mut expected_qq_mobile = query_map(&qq);
+        expected_qq_mobile.insert("display".into(), "mobile".into());
+        assert_eq!(query_map(&qq_mobile), expected_qq_mobile);
+
+        let wechat =
+            LoginApi::build_oauth_authorize_url(OAuthLoginProvider::Wechat, state).unwrap();
+        assert_eq!(wechat.host_str(), Some("open.weixin.qq.com"));
+        assert_eq!(wechat.path(), "/connect/qrconnect");
+        assert_eq!(wechat.fragment(), Some("wechat_redirect"));
+        assert_eq!(
+            query_map(&wechat),
+            BTreeMap::from([
+                ("appid".into(), "wx48db31d50e334801".into()),
+                (
+                    "href".into(),
+                    "https://y.qq.com/mediastyle/music_v17/src/css/popup_wechat.css".into()
+                ),
+                (
+                    "redirect_uri".into(),
+                    "https://y.qq.com/portal/wx_redirect.html?login_type=2&surl=https://y.qq.com/"
+                        .into()
+                ),
+                ("response_type".into(), "code".into()),
+                ("scope".into(), "snsapi_login".into()),
+                ("state".into(), state.into()),
+            ])
+        );
+        assert!(
+            LoginApi::build_oauth_mobile_authorize_url(OAuthLoginProvider::Wechat, state)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn oauth_authorize_url_rejects_invalid_state_without_network() {
+        let invalid = [
+            "",
+            "short",
+            "0123456789abcdef0123456789abcdefg",
+            "0123456789abcdef0123456789abcdeg",
+            "0123456789abcdef0123456789abcde\0",
+        ];
+        for state in invalid {
+            assert!(matches!(
+                LoginApi::build_oauth_authorize_url(OAuthLoginProvider::Qq, state),
+                Err(QmError::ValueError(_))
+            ));
+            assert!(matches!(
+                LoginApi::build_oauth_mobile_authorize_url(OAuthLoginProvider::Qq, state),
+                Err(QmError::ValueError(_))
+            ));
+        }
+        assert!(
+            LoginApi::build_oauth_mobile_authorize_url(OAuthLoginProvider::Wechat, "")
+                .unwrap()
+                .is_none()
+        );
     }
 
     fn observer(

@@ -1,4 +1,4 @@
-//! Account-scoped reads used by desktop and mobile hosts.
+//! Account-scoped reads and typed writes used by desktop and mobile hosts.
 //!
 //! Endpoint and credential selection live here. `AccountPage` keeps a bounded
 //! compatibility envelope while hosts migrate their legacy song/playlist DTOs.
@@ -170,10 +170,9 @@ pub async fn read_page(
     parse_page(serde_json::from_str(&response)?, &operation, offset, limit)
 }
 
-/// Execute one of the account write endpoints used by YAQMC's compatibility
-/// façade.  The endpoint allowlist and account comm envelope live in this
-/// crate; callers cannot select an arbitrary CGI route.
-pub async fn write_legacy(
+// Private wire executor: external callers select an AccountWrite, never a
+// module/method pair or unchecked JSON parameters.
+async fn execute_write(
     client: &Client,
     credential: &Credential,
     module: &str,
@@ -205,6 +204,9 @@ pub async fn write_legacy(
     options.comm = Some(account_write_comm(credential));
     options.override_comm = true;
     options.credential = Some(credential.clone());
+    // This envelope is the Web account contract even on an Android Client.
+    // Do not negotiate an unrelated Android session before a bounded write.
+    options.platform = Some(crate::Platform::Web);
     options.require_login = true;
     options.retry = crate::RetryClass::Write;
     options.preserve_bool = true;
@@ -220,12 +222,27 @@ pub async fn write(
     operation: AccountWrite,
     cancellation: CancellationToken,
 ) -> Result<crate::CgiReply<Value>> {
-    let (module, method, param) = operation.into_wire()?;
-    write_legacy(client, credential, module, method, param, cancellation).await
+    if cancellation.is_cancelled() {
+        return Err(cancelled());
+    }
+    let (module, method, param) = operation.into_wire(credential)?;
+    let reply = execute_write(
+        client,
+        credential,
+        module,
+        method,
+        param,
+        cancellation.clone(),
+    )
+    .await?;
+    if cancellation.is_cancelled() {
+        return Err(cancelled());
+    }
+    Ok(reply)
 }
 
 impl AccountWrite {
-    fn into_wire(self) -> Result<(&'static str, &'static str, Value)> {
+    fn into_wire(self, credential: &Credential) -> Result<(&'static str, &'static str, Value)> {
         match self {
             Self::FavoriteSong {
                 add,
@@ -304,7 +321,7 @@ impl AccountWrite {
                     json!({
                         "dirId": dir_id, "mask": mask, "dirNewName": name,
                         "dirNewDesc": description, "dirNewPicUrl": picture_url,
-                        "dirNewTagList": tag_list
+                        "dirNewtaglist": tag_list
                     }),
                 ))
             }
@@ -315,6 +332,11 @@ impl AccountWrite {
                 if playlist_id <= 0 {
                     return Err(QmError::ValueError("invalid playlist id".into()));
                 }
+                if credential.encrypt_uin.is_empty() {
+                    return Err(QmError::CredentialInvalid(
+                        "playlist collection requires encrypted account identity".into(),
+                    ));
+                }
                 Ok((
                     "music.musicasset.PlaylistFavWrite",
                     if collect {
@@ -322,7 +344,7 @@ impl AccountWrite {
                     } else {
                         "CancelFavPlaylist"
                     },
-                    json!({"v_playlistId": [playlist_id]}),
+                    json!({"uin": credential.encrypt_uin, "v_playlistId": [playlist_id]}),
                 ))
             }
         }
@@ -346,7 +368,7 @@ fn account_write_comm(credential: &Credential) -> Value {
 fn cancelled() -> QmError {
     QmError::Network(crate::NetworkError {
         kind: crate::NetworkErrorKind::Cancelled,
-        message: "account read cancelled".into(),
+        message: "account operation cancelled".into(),
     })
 }
 
@@ -520,14 +542,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn write_legacy_rejects_unknown_endpoint_before_transport() {
+    async fn private_executor_rejects_unknown_endpoint_before_transport() {
         let client = Client::new(None, None).unwrap();
         let credential = Credential {
             musicid: 1,
             musickey: "key".into(),
             ..Credential::default()
         };
-        let result = write_legacy(
+        let result = execute_write(
             &client,
             &credential,
             "music.unknown.Module",
@@ -548,7 +570,7 @@ mod tests {
             song_id: 42,
             song_type: 0,
         }
-        .into_wire()
+        .into_wire(&Credential::default())
         .unwrap();
         assert_eq!(module, "music.musicasset.PlaylistDetailWrite");
         assert_eq!(method, "AddSonglist");
@@ -564,7 +586,7 @@ mod tests {
             tid: 0,
             songs: Vec::new(),
         }
-        .into_wire();
+        .into_wire(&Credential::default());
         assert!(
             matches!(result, Err(QmError::ValueError(message)) if message == "invalid playlist track mutation")
         );

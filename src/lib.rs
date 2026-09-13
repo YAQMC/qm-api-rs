@@ -78,6 +78,7 @@ pub use credential_store::{CredentialPersist, CredentialStore, FileCredentialPer
 pub use device::{random_imei, Device, OSVersion};
 pub use error::{ErrorCategory, NetworkError, NetworkErrorKind, QmError, QrLoginReason, Result};
 pub use media::MediaSource;
+pub use models::login::{OAuthLoginProvider, OAuthPresentation};
 pub use models::song::SheetType;
 pub use models::user::{ConcernAction, DislikeIdType, MvFavAction};
 pub use models::Credential;

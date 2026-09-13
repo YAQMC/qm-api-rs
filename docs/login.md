@@ -7,6 +7,25 @@
 3. **手机客户端二维码登录**（MQTT 推送，需要手机 QQ 音乐 App 扫码）
 4. **手机验证码登录**
 
+## Web OAuth 授权 URL
+
+库提供不创建 Client、不执行网络请求的 URL 构造函数：
+
+```rust
+use qqmusic_api::{modules::LoginApi, OAuthLoginProvider};
+
+// state 由宿主使用安全随机数生成，每次尝试使用新的 32 位十六进制值。
+let desktop = LoginApi::build_oauth_authorize_url(OAuthLoginProvider::Qq, &state)?;
+let mobile = LoginApi::build_oauth_mobile_authorize_url(OAuthLoginProvider::Qq, &state)?;
+```
+
+QQ 桌面与手机展示使用各自的 endpoint 和 display 参数；微信支持桌面授权 URL，
+手机专用 URL 返回 `None`，不自动改写成另一条授权路线。
+
+这不是完整的 OAuth broker 或 code exchange 接口。宿主仍负责安全打开页面、
+回调 origin/path 校验、state 的一次性验证、取消/超时和登录尝试的生命周期。
+URL 格式测试不等于真实授权已通过；不要记录 state、code 或登录凭据。
+
 ## QQ 二维码登录
 
 ```rust

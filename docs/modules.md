@@ -399,6 +399,20 @@ user.raw_get_collect_album_list(param, credential) -> Value // 收藏专辑列�
 > 均未 live 验证），默认不编译，需启用 `--features experimental`。
 > 详见 [experimental](./experimental.md)。
 
+## account（显式账户读写边界）
+
+`account::read_page` 使用 `AccountRead` 选择收藏歌曲、歌单曲目或最近播放，
+返回校验后的 `AccountPage`。`account::write` 使用 `AccountWrite` 选择收藏歌曲、
+歌单增删改、歌曲增删及歌单收藏；不再公开 `write_legacy(module, method, param)`。
+
+两者都要求传入单次请求的 `Credential` 和 `CancellationToken`，不继承 Client 的默认账户。
+歌单收藏还要求该凭据的 `encrypt_uin` 非空；不得用普通 UIN 或其他账户的身份代替。
+写入使用固定 Web 请求契约，即使 Client 默认平台是 Android 也不先创建 Android session。
+
+写请求不自动重放，返回的 `CgiReply` 保留业务码供宿主解释。网络错误、响应格式错误、
+取消都不能证明远端没有产生副作用；宿主应按账户代次和写入语义决定是否执行安全读取对账，
+不能把重新发送写操作当作通用恢复方式。取消之后不发布成功结果，也不撤销已发生的远端操作。
+
 ## login（登录）
 
 ```rust

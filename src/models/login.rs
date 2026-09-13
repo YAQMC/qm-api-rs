@@ -2,6 +2,32 @@
 
 use super::Credential;
 
+/// Web OAuth login provider.
+///
+/// The provider is part of the typed request so callers cannot accidentally
+/// mix QQ and WeChat client parameters when constructing an authorization URL.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OAuthLoginProvider {
+    Qq,
+    Wechat,
+}
+
+impl OAuthLoginProvider {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Qq => "qq",
+            Self::Wechat => "wechat",
+        }
+    }
+}
+
+/// OAuth presentation supported by the upstream provider.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OAuthPresentation {
+    Desktop,
+    Mobile,
+}
+
 /// 二维码登录类型.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QRLoginType {
