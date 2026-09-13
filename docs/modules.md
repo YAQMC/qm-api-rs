@@ -405,6 +405,10 @@ user.raw_get_collect_album_list(param, credential) -> Value // 收藏专辑列�
 返回校验后的 `AccountPage`。`account::write` 使用 `AccountWrite` 选择收藏歌曲、
 歌单增删改、歌曲增删及歌单收藏；不再公开 `write_legacy(module, method, param)`。
 
+`AccountRead::PlaylistTracks` 严格校验返回的歌单 TID。自建歌单的 DissInfo 可能仅返回
+目录 ID，此时使用 `OwnedPlaylistTracks { tid, dir_id }`；`dir_id` 必须取自当前账户已验证的
+自建歌单列表，不能从本次待验证响应中推导。目录别名必须一致，显式 TID 冲突仍然拒绝。
+
 两者都要求传入单次请求的 `Credential` 和 `CancellationToken`，不继承 Client 的默认账户。
 歌单收藏还要求该凭据的 `encrypt_uin` 非空；不得用普通 UIN 或其他账户的身份代替。
 写入使用固定 Web 请求契约，即使 Client 默认平台是 Android 也不先创建 Android session。

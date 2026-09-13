@@ -14,7 +14,16 @@ use crate::{
 #[derive(Clone, Debug)]
 pub enum AccountRead {
     FavoriteSongs,
-    PlaylistTracks { tid: String },
+    PlaylistTracks {
+        tid: String,
+    },
+    /// Owned DissInfo can identify a directory instead of repeating its public
+    /// playlist TID. The caller must obtain this binding from the same account's
+    /// trusted playlist listing, not from the response being validated.
+    OwnedPlaylistTracks {
+        tid: String,
+        dir_id: u64,
+    },
     RecentlyPlayed,
 }
 
@@ -100,14 +109,25 @@ pub async fn read_page(
     }
     let uin = credential.str_musicid();
     let (module, method, param) = match &operation {
-        AccountRead::FavoriteSongs | AccountRead::PlaylistTracks { .. } => {
+        AccountRead::FavoriteSongs
+        | AccountRead::PlaylistTracks { .. }
+        | AccountRead::OwnedPlaylistTracks { .. } => {
             let mut param = json!({
                 "disstid": 0, "dirid": 201, "tag": true,
                 "song_begin": offset, "song_num": limit,
                 "userinfo": true, "orderlist": true, "onlysonglist": 1
             });
             match &operation {
-                AccountRead::PlaylistTracks { tid } => {
+                AccountRead::PlaylistTracks { tid }
+                | AccountRead::OwnedPlaylistTracks { tid, .. } => {
+                    if matches!(
+                        &operation,
+                        AccountRead::OwnedPlaylistTracks { dir_id: 0, .. }
+                    ) {
+                        return Err(QmError::ValueError(
+                            "invalid owned playlist directory".into(),
+                        ));
+                    }
                     if tid.is_empty()
                         || tid.len() > 128
                         || !tid
@@ -461,20 +481,18 @@ fn parse_page(
     if more == Some(true) && total.is_some_and(|total| next >= total) {
         return Err(invalid("inconsistent account hasmore"));
     }
-    if let AccountRead::PlaylistTracks { tid } = operation {
+    if let AccountRead::PlaylistTracks { tid } | AccountRead::OwnedPlaylistTracks { tid, .. } =
+        operation
+    {
         let info = data
             .get("dirinfo")
             .or_else(|| data.pointer("/cdlist/0"))
             .ok_or_else(|| invalid("missing playlist identity"))?;
-        let actual = ["tid", "disstid", "dissid", "id"]
-            .into_iter()
-            .find_map(|key| info.get(key));
-        let actual = actual.and_then(|v| {
-            v.as_str()
-                .map(str::to_owned)
-                .or_else(|| v.as_u64().map(|n| n.to_string()))
-        });
-        if actual.as_deref() != Some(tid.as_str()) {
+        let bound_dir = match operation {
+            AccountRead::OwnedPlaylistTracks { dir_id, .. } => Some(*dir_id),
+            _ => None,
+        };
+        if !playlist_identity_matches(info, tid, bound_dir) {
             return Err(invalid("playlist identity mismatch"));
         }
     }
@@ -483,6 +501,40 @@ fn parse_page(
         next_offset: has_more.then_some(next),
         total,
         row_count,
+    })
+}
+
+fn playlist_identity_matches(info: &Value, tid: &str, bound_dir: Option<u64>) -> bool {
+    let numeric_id = |value: &Value| value.as_u64().or_else(|| value.as_str()?.parse().ok());
+    let same_tid = |value: &Value| {
+        value.as_str() == Some(tid) || value.as_u64().is_some_and(|id| id.to_string() == tid)
+    };
+    let directories: Vec<_> = ["dirid", "dirId"]
+        .into_iter()
+        .filter_map(|key| info.get(key))
+        .collect();
+    if let Some(expected) = bound_dir {
+        if expected == 0
+            || directories
+                .iter()
+                .any(|value| numeric_id(value) != Some(expected))
+        {
+            return false;
+        }
+    }
+    let identities: Vec<_> = ["tid", "disstid", "dissid"]
+        .into_iter()
+        .filter_map(|key| info.get(key))
+        .collect();
+    if !identities.is_empty() {
+        // A conflicting explicit TID cannot be hidden by a matching directory.
+        return identities.into_iter().all(same_tid);
+    }
+    if info.get("id").is_some_and(same_tid) {
+        return true;
+    }
+    bound_dir.is_some_and(|expected| {
+        !directories.is_empty() && info.get("id").and_then(numeric_id) == Some(expected)
     })
 }
 
@@ -526,6 +578,67 @@ mod tests {
         assert!(
             matches!(result, Err(QmError::ApiData(message)) if message == "playlist identity mismatch")
         );
+    }
+
+    #[test]
+    fn owned_playlist_directory_requires_an_explicit_matching_binding() {
+        let page = envelope(json!({
+            "total": 1, "songlist": [{"mid":"a"}], "dirinfo":{"id":3001,"dirid":3001}
+        }));
+        let operation = AccountRead::OwnedPlaylistTracks {
+            tid: "playlist-tid".into(),
+            dir_id: 3001,
+        };
+        assert_eq!(
+            parse_page(page.clone(), &operation, 0, 10)
+                .unwrap()
+                .row_count,
+            1
+        );
+        assert!(parse_page(
+            page.clone(),
+            &AccountRead::PlaylistTracks {
+                tid: "playlist-tid".into()
+            },
+            0,
+            10
+        )
+        .is_err());
+        assert!(parse_page(
+            page,
+            &AccountRead::OwnedPlaylistTracks {
+                tid: "playlist-tid".into(),
+                dir_id: 3002
+            },
+            0,
+            10
+        )
+        .is_err());
+        for info in [
+            json!({"id":3001}),
+            json!({"id":3001,"dirid":3002}),
+            json!({"id":3001,"dirid":3001,"dirId":3002}),
+            json!({"id":3001,"dirid":3001,"tid":"another-playlist"}),
+            json!({"id":3001,"dirid":3001,"tid":"playlist-tid","disstid":"another-playlist"}),
+            json!({"id":3001,"dirid":3001,"tid":null}),
+        ] {
+            assert!(parse_page(
+                envelope(json!({"total":1,"songlist":[{}],"dirinfo":info})),
+                &operation,
+                0,
+                10
+            )
+            .is_err());
+        }
+        assert!(parse_page(
+            envelope(json!({
+                "total":1,"songlist":[{}],"dirinfo":{"tid":"playlist-tid","dirId":3001}
+            })),
+            &operation,
+            0,
+            10
+        )
+        .is_ok());
     }
 
     #[test]
