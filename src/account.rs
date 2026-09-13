@@ -14,6 +14,8 @@ use crate::{
 #[derive(Clone, Debug)]
 pub enum AccountRead {
     FavoriteSongs,
+    OwnedPlaylists,
+    CollectedPlaylists,
     PlaylistTracks {
         tid: String,
     },
@@ -109,6 +111,23 @@ pub async fn read_page(
     }
     let uin = credential.str_musicid();
     let (module, method, param) = match &operation {
+        AccountRead::OwnedPlaylists => (
+            "music.musicasset.PlaylistBaseRead",
+            "GetPlaylistByUin",
+            json!({"uin":uin,"sin":offset,"ein":offset + u64::from(limit) - 1}),
+        ),
+        AccountRead::CollectedPlaylists => {
+            if credential.encrypt_uin.trim().is_empty() {
+                return Err(QmError::CredentialInvalid(
+                    "collected playlists require encrypted account identity".into(),
+                ));
+            }
+            (
+                "music.musicasset.PlaylistFavRead",
+                "CgiGetPlaylistFavInfo",
+                json!({"uin":credential.encrypt_uin,"offset":offset,"size":limit}),
+            )
+        }
         AccountRead::FavoriteSongs
         | AccountRead::PlaylistTracks { .. }
         | AccountRead::OwnedPlaylistTracks { .. } => {
@@ -446,6 +465,11 @@ fn parse_page(
         .map(|v| v.as_u64().ok_or_else(|| invalid("invalid page total")))
         .transpose()?;
     let rows = match operation {
+        AccountRead::OwnedPlaylists => data.get("v_playlist").or_else(|| data.get("playlist")),
+        AccountRead::CollectedPlaylists => data
+            .get("v_list")
+            .or_else(|| data.get("v_playlist"))
+            .or_else(|| data.get("playlist")),
         AccountRead::RecentlyPlayed => data
             .get("songlist")
             .or_else(|| data.get("tracks"))
@@ -456,7 +480,7 @@ fn parse_page(
             .or_else(|| data.get("tracks")),
     }
     .and_then(Value::as_array)
-    .ok_or_else(|| invalid("missing account song list"))?;
+    .ok_or_else(|| invalid("missing account row list"))?;
     if rows.len() > limit as usize {
         return Err(invalid("account page exceeds requested limit"));
     }
@@ -467,19 +491,44 @@ fn parse_page(
     if total.is_some_and(|total| next > total && row_count > 0) {
         return Err(invalid("inconsistent account page total"));
     }
-    let more = match data.get("hasmore").or_else(|| data.get("has_more")) {
-        None => None,
-        Some(Value::Bool(more)) => Some(*more),
-        Some(v) if v.as_u64() == Some(0) => Some(false),
-        Some(v) if v.as_u64() == Some(1) => Some(true),
-        _ => return Err(invalid("invalid account hasmore")),
-    };
+    let mut more = None;
+    for (key, inverted) in [("hasmore", false), ("has_more", false), ("bFinish", true)] {
+        if key == "bFinish"
+            && !matches!(
+                operation,
+                AccountRead::OwnedPlaylists | AccountRead::CollectedPlaylists
+            )
+        {
+            continue;
+        }
+        let Some(value) = data.get(key) else {
+            continue;
+        };
+        let value = match value {
+            Value::Bool(value) => *value,
+            v if v.as_u64() == Some(0) => false,
+            v if v.as_u64() == Some(1) => true,
+            _ => return Err(invalid("invalid account continuation flag")),
+        } ^ inverted;
+        if more.is_some_and(|prior| prior != value) {
+            return Err(invalid("conflicting account continuation flags"));
+        }
+        more = Some(value);
+    }
     let has_more = more.unwrap_or_else(|| total.map_or(row_count > 0, |total| next < total));
     if row_count == 0 && has_more {
         return Err(invalid("account page made no progress"));
     }
     if more == Some(true) && total.is_some_and(|total| next >= total) {
         return Err(invalid("inconsistent account hasmore"));
+    }
+    if matches!(
+        operation,
+        AccountRead::OwnedPlaylists | AccountRead::CollectedPlaylists
+    ) && more == Some(false)
+        && total.is_some_and(|total| next < total)
+    {
+        return Err(invalid("account list finished before its declared total"));
     }
     if let AccountRead::PlaylistTracks { tid } | AccountRead::OwnedPlaylistTracks { tid, .. } =
         operation

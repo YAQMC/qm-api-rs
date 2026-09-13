@@ -401,13 +401,18 @@ user.raw_get_collect_album_list(param, credential) -> Value // 收藏专辑列�
 
 ## account（显式账户读写边界）
 
-`account::read_page` 使用 `AccountRead` 选择收藏歌曲、歌单曲目或最近播放，
+`account::read_page` 使用 `AccountRead` 选择收藏歌曲、自建/收藏歌单列表、歌单曲目或最近播放，
 返回校验后的 `AccountPage`。`account::write` 使用 `AccountWrite` 选择收藏歌曲、
 歌单增删改、歌曲增删及歌单收藏；不再公开 `write_legacy(module, method, param)`。
 
 `AccountRead::PlaylistTracks` 严格校验返回的歌单 TID。自建歌单的 DissInfo 可能仅返回
 目录 ID，此时使用 `OwnedPlaylistTracks { tid, dir_id }`；`dir_id` 必须取自当前账户已验证的
 自建歌单列表，不能从本次待验证响应中推导。目录别名必须一致，显式 TID 冲突仍然拒绝。
+
+`OwnedPlaylists` 按 `offset/limit` 生成包含结束行的列表区间；`CollectedPlaylists`
+从本次显式凭据取加密账户标识。翻页按原始响应行数推进，不按宿主筛选后的条目数推进。
+响应偏移、页大小、总数和 `hasmore`/`bFinish` 必须一致；非空无总数页可继续，明确结束标志
+可终止未知总数列表。缺失列表、重复第一页、零进展和矛盾结束标志不会被伪装成空列表成功。
 
 两者都要求传入单次请求的 `Credential` 和 `CancellationToken`，不继承 Client 的默认账户。
 歌单收藏还要求该凭据的 `encrypt_uin` 非空；不得用普通 UIN 或其他账户的身份代替。
