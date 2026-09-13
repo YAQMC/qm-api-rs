@@ -30,6 +30,89 @@ use crate::transport::{HttpMethod, RedirectMode, RetryClass};
 use crate::utils::hash33;
 use crate::versioning::Platform;
 
+/// WeChat Music application id used by the desktop authorization-code exchange.
+pub const WECHAT_MUSIC_APP_ID: &str = "wx48db31d50e334801";
+
+/// Wire shape of one OAuth authorization-code exchange.
+///
+/// The library owns `module`/`method`/`param`/`comm`; callers own transport,
+/// retry policy, cookies and login-attempt ownership. This keeps the upstream
+/// CGI contract in one place instead of duplicating literals per host.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OAuthCodeExchangeRequest {
+    pub module: &'static str,
+    pub method: &'static str,
+    pub param: Value,
+    pub comm: Value,
+}
+
+/// Build the authorization-code exchange request for QQ or WeChat desktop OAuth.
+///
+/// `gtk` is included only when the caller already resolved the csrf token for
+/// the current cookie jar; omitting it preserves the existing payload shape.
+pub fn build_oauth_code_exchange_request(
+    provider: OAuthLoginProvider,
+    code: &str,
+    gtk: Option<u32>,
+) -> OAuthCodeExchangeRequest {
+    let (module, method, param, login_type) = match provider {
+        OAuthLoginProvider::Qq => (
+            "QQConnectLogin.LoginServer",
+            "QQLogin",
+            json!({ "code": code }),
+            2,
+        ),
+        OAuthLoginProvider::Wechat => (
+            "music.login.LoginServer",
+            "Login",
+            json!({ "code": code, "strAppid": WECHAT_MUSIC_APP_ID }),
+            1,
+        ),
+    };
+    let mut comm = json!({
+        "platform": "yqq",
+        "ct": 24,
+        "cv": 0,
+        "tmeLoginType": login_type,
+    });
+    if let Some(gtk) = gtk {
+        comm["g_tk"] = json!(gtk);
+    }
+    OAuthCodeExchangeRequest {
+        module,
+        method,
+        param,
+        comm,
+    }
+}
+
+/// Decode the `data` object of a login exchange into a [`Credential`].
+///
+/// Handles the alternate wire spellings used by the desktop exchange
+/// (`uin`, `musicKey`) so callers never re-declare the response contract.
+pub fn credential_from_login_data(data: &Value) -> Result<Credential> {
+    let mut credential: Credential = serde_json::from_value(data.clone())?;
+    if credential.str_musicid.is_empty() && credential.musicid == 0 {
+        if let Some(uin) = string_field(data, "uin") {
+            credential.str_musicid = uin;
+        }
+    }
+    if credential.musickey.is_empty() {
+        if let Some(music_key) = string_field(data, "musicKey") {
+            credential.musickey = music_key;
+        }
+    }
+    Ok(credential)
+}
+
+fn string_field(data: &Value, key: &str) -> Option<String> {
+    match data.get(key)? {
+        Value::String(value) if !value.is_empty() => Some(value.clone()),
+        Value::Number(value) => Some(value.to_string()),
+        _ => None,
+    }
+}
+
 fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1276,6 +1359,68 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn oauth_code_exchange_wire_shape_covers_both_providers() {
+        let qq = build_oauth_code_exchange_request(OAuthLoginProvider::Qq, "SYNTHETIC_CODE", None);
+        assert_eq!(qq.module, "QQConnectLogin.LoginServer");
+        assert_eq!(qq.method, "QQLogin");
+        assert_eq!(qq.param, json!({ "code": "SYNTHETIC_CODE" }));
+        assert_eq!(
+            qq.comm,
+            json!({ "platform": "yqq", "ct": 24, "cv": 0, "tmeLoginType": 2 })
+        );
+        assert!(qq.comm.get("g_tk").is_none());
+
+        let wechat = build_oauth_code_exchange_request(
+            OAuthLoginProvider::Wechat,
+            "SYNTHETIC_CODE",
+            Some(5381),
+        );
+        assert_eq!(wechat.module, "music.login.LoginServer");
+        assert_eq!(wechat.method, "Login");
+        assert_eq!(
+            wechat.param,
+            json!({ "code": "SYNTHETIC_CODE", "strAppid": WECHAT_MUSIC_APP_ID })
+        );
+        assert_eq!(wechat.comm["tmeLoginType"], json!(1));
+        assert_eq!(wechat.comm["g_tk"], json!(5381));
+        assert_eq!(wechat.comm["platform"], json!("yqq"));
+    }
+
+    #[test]
+    fn login_data_decodes_musicid_and_alternate_spellings() {
+        let numeric = credential_from_login_data(&json!({
+            "musicid": 1000000001_i64,
+            "musickey": "SYNTHETIC_KEY",
+            "musickeyCreateTime": 1_700_000_000_i64,
+            "keyExpiresIn": 86_400_i64
+        }))
+        .expect("numeric musicid");
+        assert_eq!(numeric.musicid, 1_000_000_001);
+        assert_eq!(numeric.str_musicid(), "1000000001");
+        assert_eq!(numeric.musickey, "SYNTHETIC_KEY");
+        assert_eq!(numeric.musickey_create_time, 1_700_000_000);
+        assert_eq!(numeric.key_expires_in, 86_400);
+
+        let aliased = credential_from_login_data(&json!({
+            "uin": "1000000002",
+            "musicKey": "SYNTHETIC_KEY_2"
+        }))
+        .expect("aliased uin and musicKey");
+        assert_eq!(aliased.str_musicid, "1000000002");
+        assert_eq!(aliased.str_musicid(), "1000000002");
+        assert_eq!(aliased.musicid, 0);
+        assert_eq!(aliased.musickey, "SYNTHETIC_KEY_2");
+
+        let numeric_uin =
+            credential_from_login_data(&json!({ "uin": 1000000003_i64 })).expect("numeric uin");
+        assert_eq!(numeric_uin.str_musicid, "1000000003");
+
+        let empty = credential_from_login_data(&json!({})).expect("empty object decodes");
+        assert!(empty.str_musicid().is_empty());
+        assert!(empty.musickey.is_empty());
     }
 
     fn observer(
