@@ -305,6 +305,34 @@ const PTQR_TOKEN_SEED: i64 = 0;
 /// `g_tk` uses the ptlogin `hash33` variant seeded with 5381.
 const GTK_SEED: i64 = 5381;
 
+// ---------------------------------------------------------------------------
+// Mobile QQ sign-in: a `display=mobile` QR must be approved inside the phone's
+// in-app browser. The library owns the page and the identifier encoding so the
+// host never assembles a QQ URL itself.
+// ---------------------------------------------------------------------------
+
+/// Upper bound for the QR challenge identifier accepted by
+/// [`mobile_qr_launch_url`].
+pub const MAX_MOBILE_QR_ID_BYTES: usize = 512;
+const MOBILE_QR_LAUNCH_URL: &str = "https://y.qq.com/m/client/qr_code_login/authorize.html";
+
+/// Builds the in-app-browser deep link a phone opens to approve a mobile QR
+/// challenge. `identifier` is the value returned alongside the QR image; empty,
+/// oversized or control-character identifiers are rejected so the host never
+/// hands a malformed string to the system browser.
+pub fn mobile_qr_launch_url(identifier: &str) -> Result<String> {
+    if identifier.is_empty()
+        || identifier.len() > MAX_MOBILE_QR_ID_BYTES
+        || identifier.bytes().any(|byte| byte.is_ascii_control())
+    {
+        return Err(malformed("invalid mobile QR identifier"));
+    }
+    let mut url = url::Url::parse(MOBILE_QR_LAUNCH_URL)
+        .map_err(|_| qr_protocol("invalid mobile QR launch url"))?;
+    url.query_pairs_mut().append_pair("qrcode_id", identifier);
+    Ok(url.to_string())
+}
+
 /// A created desktop QR challenge. The image is rendered by the host; `qrsig`
 /// is attempt state and must only be handed back to [`poll_desktop_qr`].
 pub struct DesktopQrChallenge {

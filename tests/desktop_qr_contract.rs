@@ -1,7 +1,7 @@
 use qqmusic_api::{
     auth::{
-        create_desktop_qr, poll_desktop_qr, DesktopQrPoll, DESKTOP_QR_LIFETIME_MS,
-        MAX_DESKTOP_QR_IMAGE_BYTES,
+        create_desktop_qr, mobile_qr_launch_url, poll_desktop_qr, DesktopQrPoll,
+        DESKTOP_QR_LIFETIME_MS, MAX_DESKTOP_QR_IMAGE_BYTES, MAX_MOBILE_QR_ID_BYTES,
     },
     ApiTransport, CancellationToken, Client, Credential, HttpMethod, QmError, RedirectMode,
     RetryClass, TransportRequest, TransportResponse,
@@ -440,4 +440,26 @@ async fn desktop_qr_validates_the_image_and_honours_cancellation() {
         transport.seen().is_empty(),
         "cancelled calls must not hit the network"
     );
+}
+
+#[test]
+fn mobile_qr_launch_url_is_library_owned_and_encoded() {
+    assert_eq!(
+        mobile_qr_launch_url("SYNTHETIC_ID").unwrap(),
+        "https://y.qq.com/m/client/qr_code_login/authorize.html?qrcode_id=SYNTHETIC_ID"
+    );
+    assert_eq!(
+        mobile_qr_launch_url("a b&c=d").unwrap(),
+        "https://y.qq.com/m/client/qr_code_login/authorize.html?qrcode_id=a+b%26c%3Dd"
+    );
+}
+
+#[test]
+fn mobile_qr_launch_url_rejects_untrusted_identifiers() {
+    assert!(mobile_qr_launch_url("").is_err());
+    assert!(mobile_qr_launch_url("bad\nid").is_err());
+    let oversized = "x".repeat(MAX_MOBILE_QR_ID_BYTES + 1);
+    assert!(mobile_qr_launch_url(&oversized).is_err());
+    let boundary = "x".repeat(MAX_MOBILE_QR_ID_BYTES);
+    assert!(mobile_qr_launch_url(&boundary).is_ok());
 }
