@@ -345,11 +345,4 @@ async fn expiry_aliases_and_secret_safe_debug_are_preserved() {
         assert_eq!(response.credential.encrypt_uin, "SYNTHETIC_EUIN");
         assert!(!format!("{response:?}").contains("SYNTHETIC"));
     }
-    let wire = qqmusic_api::build_oauth_code_exchange_request(
-        OAuthLoginProvider::Qq,
-        "SYNTHETIC_SECRET_CODE",
-        Some(12345),
-    );
-    assert!(!format!("{wire:?}").contains("SYNTHETIC_SECRET_CODE"));
-    assert!(!format!("{wire:?}").contains("12345"));
 }

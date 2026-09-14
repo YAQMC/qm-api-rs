@@ -1,8 +1,9 @@
 //! Attempt-scoped OAuth exchange. Browser callback validation, attempt ownership
 //! and persistence belong to the host; QQ protocol and wire cookies live here.
 use crate::{
-    build_oauth_code_exchange_request, credential_from_login_data, CancellationToken, Client,
-    Credential, HttpMethod, HttpOptions, OAuthLoginProvider, QmError, Result, RetryClass,
+    modules::login::{build_oauth_code_exchange_request, credential_from_login_data},
+    CancellationToken, Client, Credential, HttpMethod, HttpOptions, OAuthLoginProvider, QmError,
+    Result, RetryClass,
 };
 use serde_json::{json, Value};
 use std::{collections::BTreeMap, fmt};

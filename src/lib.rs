@@ -85,10 +85,6 @@ pub use models::song::SheetType;
 pub use models::user::{ConcernAction, DislikeIdType, MvFavAction};
 pub use models::Credential;
 pub use modules::helper_utils::UploadFileSession;
-pub use modules::login::{
-    build_oauth_code_exchange_request, credential_from_login_data, OAuthCodeExchangeRequest,
-    WECHAT_MUSIC_APP_ID,
-};
 pub use modules::login_utils::{PhoneLoginSession, PollInterval, QRCodeLoginSession};
 pub use modules::search::SearchType;
 pub use modules::singer::{AreaType, GenreType, IndexType, SexType, TabType};

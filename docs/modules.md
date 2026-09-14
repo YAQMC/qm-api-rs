@@ -445,7 +445,7 @@ user.raw_get_collect_album_list(param, credential) -> Value // 收藏专辑列�
 响应限制 256 KiB，底层 transport 必须在读取时执行 `max_response_bytes`。错误不得包含
 原始授权码、Cookie 或登录响应；输出会话和旧 payload builder 的 Debug 均隐藏秘密。
 已取消、格式错误、业务失败和无效身份不产生可持久化会话；登录类型以请求选定的 provider
-为准。`build_oauth_code_exchange_request` 仅为兼容构造 API，不代表已执行交换。
+为准。请求载荷构造与响应字段解码均为库内实现，外部不暴露“只构造但不执行”的业务 API。
 
 ```rust
 login.get_qrcode(QRLoginType) -> QR                       // QQ / WX / Mobile

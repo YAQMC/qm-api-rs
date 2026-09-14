@@ -31,7 +31,7 @@ use crate::utils::hash33;
 use crate::versioning::Platform;
 
 /// WeChat Music application id used by the desktop authorization-code exchange.
-pub const WECHAT_MUSIC_APP_ID: &str = "wx48db31d50e334801";
+pub(crate) const WECHAT_MUSIC_APP_ID: &str = "wx48db31d50e334801";
 
 /// Wire shape of one OAuth authorization-code exchange.
 ///
@@ -39,7 +39,7 @@ pub const WECHAT_MUSIC_APP_ID: &str = "wx48db31d50e334801";
 /// retry policy, cookies and login-attempt ownership. This keeps the upstream
 /// CGI contract in one place instead of duplicating literals per host.
 #[derive(Clone, PartialEq)]
-pub struct OAuthCodeExchangeRequest {
+pub(crate) struct OAuthCodeExchangeRequest {
     pub module: &'static str,
     pub method: &'static str,
     pub param: Value,
@@ -59,7 +59,7 @@ impl std::fmt::Debug for OAuthCodeExchangeRequest {
 ///
 /// `gtk` is included only when the caller already resolved the csrf token for
 /// the current cookie jar; omitting it preserves the existing payload shape.
-pub fn build_oauth_code_exchange_request(
+pub(crate) fn build_oauth_code_exchange_request(
     provider: OAuthLoginProvider,
     code: &str,
     gtk: Option<u32>,
@@ -99,7 +99,7 @@ pub fn build_oauth_code_exchange_request(
 ///
 /// Handles the alternate wire spellings used by the desktop exchange
 /// (`uin`, `musicKey`) so callers never re-declare the response contract.
-pub fn credential_from_login_data(data: &Value) -> Result<Credential> {
+pub(crate) fn credential_from_login_data(data: &Value) -> Result<Credential> {
     let mut credential: Credential = serde_json::from_value(data.clone())?;
     if credential.str_musicid.is_empty() && credential.musicid == 0 {
         if let Some(uin) = string_field(data, "uin") {
@@ -1381,6 +1381,7 @@ mod tests {
             json!({ "platform": "yqq", "ct": 24, "cv": 0, "tmeLoginType": 2 })
         );
         assert!(qq.comm.get("g_tk").is_none());
+        assert!(!format!("{qq:?}").contains("SYNTHETIC_CODE"));
 
         let wechat = build_oauth_code_exchange_request(
             OAuthLoginProvider::Wechat,
