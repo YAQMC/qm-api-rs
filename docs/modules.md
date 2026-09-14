@@ -447,6 +447,15 @@ user.raw_get_collect_album_list(param, credential) -> Value // 收藏专辑列�
 已取消、格式错误、业务失败和无效身份不产生可持久化会话；登录类型以请求选定的 provider
 为准。请求载荷构造与响应字段解码均为库内实现，外部不暴露“只构造但不执行”的业务 API。
 
+桌面 QQ 二维码使用 `auth::create_desktop_qr` 和 `auth::poll_desktop_qr`。库负责
+`ptqrshow`、`ptqrlogin`、`check_sig`、QQ authorize 和最终 code exchange；`ptqrtoken`
+采用参考实现的 hash33 默认 0 种子，`g_tk` 采用 5381。手机 QR 系统浏览器地址使用
+`auth::mobile_qr_launch_url`，OAuth 宿主回调校验共享 `auth::oauth_callback_contract`。
+
+新挑战显式发送空 Cookie，轮询只发送该挑战的 qrsig。所有文本/图片响应有读取上限，
+非轮询步骤不自动重放；重复关键 header、畸形 `ptuiCB`、非预期最终 URL、跨域/错路径
+跳转和重复授权码均拒绝。宿主仍负责登录尝试生命周期、state、窗口导航与安全持久化。
+
 ```rust
 login.get_qrcode(QRLoginType) -> QR                       // QQ / WX / Mobile
 login.check_qrcode(&QR) -> QRLoginResult

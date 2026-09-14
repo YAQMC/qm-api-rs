@@ -36,6 +36,7 @@ struct Seen {
     body: Vec<u8>,
     retry: RetryClass,
     redirects: RedirectMode,
+    max_response_bytes: Option<usize>,
 }
 
 struct Script {
@@ -79,6 +80,7 @@ impl ApiTransport for Script {
             body,
             retry: request.retry,
             redirects: request.redirects,
+            max_response_bytes: request.max_response_bytes,
         });
         Ok(step.response)
     }
@@ -264,6 +266,8 @@ async fn desktop_qr_reaches_a_session_without_sending_ambient_credentials() {
     assert!(seen.iter().all(|s| !cookie_header(s).contains("999")));
     assert_eq!(seen[0].retry, RetryClass::SafeRead);
     assert_eq!(seen[0].redirects, RedirectMode::FollowValidated);
+    assert_eq!(seen[0].max_response_bytes, Some(MAX_DESKTOP_QR_IMAGE_BYTES));
+    assert_eq!(header(&seen[0], "cookie").as_deref(), Some(""));
     assert_eq!(
         header(&seen[0], "referer").unwrap(),
         "https://xui.ptlogin2.qq.com/"
@@ -275,6 +279,7 @@ async fn desktop_qr_reaches_a_session_without_sending_ambient_credentials() {
     assert_eq!(query(&seen[0], "t").unwrap(), format!("0.{NOW}"));
     assert_eq!(seen[1].retry, RetryClass::AuthPoll);
     assert_eq!(seen[1].redirects, RedirectMode::None);
+    assert_eq!(seen[1].max_response_bytes, Some(16 * 1024));
     assert_eq!(cookie_header(&seen[1]), "qrsig=SYNTHETIC_QRSIG");
     // Reference golden value: hash33("SYNTHETIC_QRSIG", 0). The 5381-seeded
     // variant used by `g_tk` would be 452482981.
@@ -300,6 +305,7 @@ async fn desktop_qr_reaches_a_session_without_sending_ambient_credentials() {
         header(&seen[5], "content-type").unwrap(),
         "application/x-www-form-urlencoded"
     );
+    assert_eq!(seen[6].max_response_bytes, Some(256 * 1024));
 }
 
 #[tokio::test]
@@ -390,6 +396,129 @@ async fn desktop_qr_rejects_unrecognized_status_and_hostile_redirects() {
 }
 
 #[tokio::test]
+async fn desktop_qr_rejects_ambiguous_headers_redirects_and_callback_grammar() {
+    let malformed_callbacks = [
+        "ptuiCB('0''0''https://ssl.ptlogin2.graph.qq.com/check_sig');",
+        "prefix ptuiCB('66','0','','0','ok');",
+        "ptuiCB('66','0','','0','ok'); trailing",
+        "ptuiCB('66',);",
+        "ptuiCB(66,'0','','0','ok');",
+    ];
+    for body in malformed_callbacks {
+        let transport = Script::new(vec![Step {
+            method: HttpMethod::Get,
+            url: PTQR_LOGIN,
+            response: response(200, PTQR_LOGIN, Vec::new(), body.as_bytes().to_vec()),
+        }]);
+        assert!(poll_desktop_qr(
+            &client_with(transport),
+            "SYNTHETIC_QRSIG",
+            NOW,
+            CancellationToken::new(),
+        )
+        .await
+        .is_err());
+    }
+
+    let transport = Script::new(vec![Step {
+        method: HttpMethod::Get,
+        url: PTQR_SHOW,
+        response: response(
+            200,
+            PTQR_SHOW,
+            vec![
+                ("content-type", "image/png"),
+                ("Content-Type", "image/jpeg"),
+                ("set-cookie", "qrsig=SYNTHETIC_QRSIG"),
+            ],
+            b"image".to_vec(),
+        ),
+    }]);
+    assert!(
+        create_desktop_qr(&client_with(transport), NOW, CancellationToken::new())
+            .await
+            .is_err()
+    );
+
+    for location in [
+        "https://evil.example/oauth2.0/login_jump",
+        "https://graph.qq.com.evil.example/oauth2.0/login_jump",
+        "https://graph.qq.com/oauth2.0/other",
+    ] {
+        let transport = Script::new(vec![qr_poll("0"), check_sig(location)]);
+        assert!(poll_desktop_qr(
+            &client_with(transport.clone()),
+            "SYNTHETIC_QRSIG",
+            NOW,
+            CancellationToken::new(),
+        )
+        .await
+        .is_err());
+        assert_eq!(
+            transport.seen().len(),
+            2,
+            "hostile check_sig redirect stops authorization"
+        );
+    }
+
+    let transport = Script::new(vec![
+        qr_poll("0"),
+        check_sig("https://graph.qq.com/oauth2.0/login_jump"),
+        authorize("https://y.qq.com/portal/wx_redirect.html?code=first&code=second"),
+    ]);
+    assert!(poll_desktop_qr(
+        &client_with(transport.clone()),
+        "SYNTHETIC_QRSIG",
+        NOW,
+        CancellationToken::new(),
+    )
+    .await
+    .is_err());
+    assert_eq!(
+        transport.seen().len(),
+        3,
+        "ambiguous code must not be exchanged"
+    );
+}
+
+#[tokio::test]
+async fn desktop_qr_rejects_mismatched_final_urls_and_duplicate_locations() {
+    let transport = Script::new(vec![Step {
+        method: HttpMethod::Get,
+        url: PTQR_LOGIN,
+        response: response(
+            200,
+            "https://ssl.ptlogin2.qq.com/unexpected",
+            Vec::new(),
+            b"ptuiCB('66','0','','0','waiting');".to_vec(),
+        ),
+    }]);
+    assert!(poll_desktop_qr(
+        &client_with(transport),
+        "SYNTHETIC_QRSIG",
+        NOW,
+        CancellationToken::new(),
+    )
+    .await
+    .is_err());
+
+    let mut duplicate = check_sig("https://graph.qq.com/oauth2.0/login_jump");
+    duplicate
+        .response
+        .headers
+        .push(("Location".into(), "https://evil.example/login_jump".into()));
+    let transport = Script::new(vec![qr_poll("0"), duplicate]);
+    assert!(poll_desktop_qr(
+        &client_with(transport),
+        "SYNTHETIC_QRSIG",
+        NOW,
+        CancellationToken::new(),
+    )
+    .await
+    .is_err());
+}
+
+#[tokio::test]
 async fn desktop_qr_validates_the_image_and_honours_cancellation() {
     let transport = Script::new(vec![Step {
         method: HttpMethod::Get,
@@ -469,7 +598,7 @@ fn mobile_qr_launch_url_rejects_untrusted_identifiers() {
 fn oauth_callback_contract_matches_the_wire_redirect() {
     let prefix = oauth_callback_url_prefix(OAuthLoginProvider::Qq);
     assert_eq!(prefix, "https://y.qq.com/portal/wx_redirect.html");
-    assert!(CODE_REDIRECT.starts_with(&prefix));
+    assert!(CODE_REDIRECT.starts_with(prefix));
 
     let qq = oauth_callback_contract(OAuthLoginProvider::Qq);
     assert_eq!(qq.host, "y.qq.com");

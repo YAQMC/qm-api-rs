@@ -296,6 +296,7 @@ const OAUTH_AUTHORIZE_URL: &str = "https://graph.qq.com/oauth2.0/authorize";
 const OAUTH_AUTHORIZE_REFERER: &str = "https://graph.qq.com/";
 /// Fixed `surl` query value the browser-redirect login flow always returns to.
 pub const OAUTH_CALLBACK_SURL: &str = "https://y.qq.com/";
+pub const OAUTH_CALLBACK_URL_PREFIX: &str = "https://y.qq.com/portal/wx_redirect.html";
 const OAUTH_REDIRECT_URI: &str =
     "https://y.qq.com/portal/wx_redirect.html?login_type=1&surl=https://y.qq.com/";
 const OAUTH_CODE_HOST: &str = "y.qq.com";
@@ -329,9 +330,8 @@ pub fn oauth_callback_contract(provider: OAuthLoginProvider) -> OAuthCallbackCon
 }
 
 /// The fixed `https://<host><path>` prefix a host callback URL starts with.
-pub fn oauth_callback_url_prefix(provider: OAuthLoginProvider) -> String {
-    let contract = oauth_callback_contract(provider);
-    format!("https://{}{}", contract.host, contract.path)
+pub fn oauth_callback_url_prefix(_provider: OAuthLoginProvider) -> &'static str {
+    OAUTH_CALLBACK_URL_PREFIX
 }
 /// `ptqrtoken` is `hash33(qrsig)` with the default zero seed in both reference
 /// clients (L-1124 `utils.hash33(t, h=0)` and wxuyu `loginUtils.hash33`).
@@ -410,8 +410,8 @@ impl fmt::Debug for DesktopQrPoll {
     }
 }
 
-/// Create a desktop QQ QR challenge. Only the image, MIME type and attempt
-/// secret leave this call; the poll cookie never reaches the caller.
+/// Create a desktop QQ QR challenge. Only the image, MIME type and qrsig needed
+/// for the next poll leave this call; other response cookies stay internal.
 pub async fn create_desktop_qr(
     client: &Client,
     now_ms: u64,
@@ -433,7 +433,12 @@ pub async fn create_desktop_qr(
             ("pt_3rd_aid".into(), OAUTH_CLIENT_ID.into()),
             ("u1".into(), PTLOGIN_U1.into()),
         ],
-        headers: vec![("Referer".into(), PTLOGIN_REFERER.into())],
+        headers: vec![
+            ("Referer".into(), PTLOGIN_REFERER.into()),
+            // A client may have a populated login jar. QR creation belongs to
+            // a new attempt and must not inherit that account.
+            ("Cookie".into(), String::new()),
+        ],
         max_response_bytes: Some(MAX_DESKTOP_QR_IMAGE_BYTES),
         cancellation: cancellation.clone(),
         ..HttpOptions::default()
@@ -451,7 +456,7 @@ pub async fn create_desktop_qr(
     if response.body.is_empty() || response.body.len() > MAX_DESKTOP_QR_IMAGE_BYTES {
         return Err(malformed("empty or oversized QR image"));
     }
-    let mime_type = header_value(&response, "content-type")
+    let mime_type = unique_header(&response, "content-type")?
         .and_then(normalize_image_mime)
         .ok_or_else(|| malformed("unsupported QR image type"))?;
     let mut cookies = Cookies::default();
@@ -528,6 +533,7 @@ pub async fn poll_desktop_qr(
     if !(200..300).contains(&response.status) {
         return Err(qr_protocol("ptqrlogin returned a non-success status"));
     }
+    require_response_endpoint(&response, "ssl.ptlogin2.qq.com", "/ptqrlogin")?;
     if response.body.len() > MAX_DESKTOP_QR_TEXT_BYTES {
         return Err(malformed("oversized QR poll response"));
     }
@@ -571,9 +577,12 @@ async fn complete_desktop_sign_in(
         .context
         .request_http_raw(HttpMethod::Get, callback_url, &options)
         .await?;
-    if !is_redirect(&check_sig) {
-        return Err(qr_protocol("check_sig did not redirect"));
-    }
+    require_response_endpoint(&check_sig, CHECK_SIG_HOST, CHECK_SIG_PATH)?;
+    let check_sig_location = redirect_location(&check_sig, "check_sig did not redirect")?;
+    let check_sig_location = url::Url::parse(&check_sig.final_url)
+        .and_then(|base| base.join(check_sig_location))
+        .map_err(|_| malformed("invalid check_sig redirect"))?;
+    require_endpoint(&check_sig_location, "graph.qq.com", "/oauth2.0/login_jump")?;
     cookies.absorb(&check_sig.headers)?;
     let p_skey = cookies
         .0
@@ -602,26 +611,29 @@ async fn complete_desktop_sign_in(
         .context
         .request_http_raw(HttpMethod::Post, OAUTH_AUTHORIZE_URL, &options)
         .await?;
-    if !is_redirect(&authorize) {
-        return Err(qr_protocol("authorize did not redirect"));
-    }
+    require_response_endpoint(&authorize, "graph.qq.com", "/oauth2.0/authorize")?;
+    let location = redirect_location(&authorize, "authorize did not redirect")?;
     cookies.absorb(&authorize.headers)?;
-    let location = header_value(&authorize, "location")
-        .ok_or_else(|| malformed("missing authorize redirect"))?;
     let location = url::Url::parse(&authorize.final_url)
         .and_then(|base| base.join(location))
         .map_err(|_| malformed("invalid authorize redirect"))?;
     require_endpoint(&location, OAUTH_CODE_HOST, OAUTH_CODE_PATH)?;
-    let code = location
+    let codes = location
         .query_pairs()
-        .find_map(|(key, value)| (key == "code" && !value.is_empty()).then(|| value.into_owned()))
-        .ok_or_else(|| malformed("missing authorization code"))?;
+        .filter_map(|(key, value)| (key == "code").then(|| value.into_owned()))
+        .collect::<Vec<_>>();
+    let [code] = codes.as_slice() else {
+        return Err(malformed("missing or duplicate authorization code"));
+    };
+    if code.is_empty() {
+        return Err(malformed("missing or duplicate authorization code"));
+    }
     let cookie_header = cookies.header();
     let session = exchange_oauth_code(
         client,
         OAuthExchange {
             provider: OAuthLoginProvider::Qq,
-            code: &code,
+            code,
             gtk: Some(gtk),
             cookie_header: &cookie_header,
             now_ms,
@@ -677,17 +689,33 @@ fn require_endpoint(url: &url::Url, host: &str, path: &str) -> Result<()> {
     }
 }
 
-fn is_redirect(response: &TransportResponse) -> bool {
-    matches!(response.status, 301 | 302 | 303 | 307 | 308)
-        && header_value(response, "location").is_some()
+fn require_response_endpoint(response: &TransportResponse, host: &str, path: &str) -> Result<()> {
+    let final_url = url::Url::parse(&response.final_url)
+        .map_err(|_| malformed("invalid final QR response URL"))?;
+    require_endpoint(&final_url, host, path)
 }
 
-fn header_value<'a>(response: &'a TransportResponse, name: &str) -> Option<&'a str> {
-    response
+fn unique_header<'a>(response: &'a TransportResponse, name: &str) -> Result<Option<&'a str>> {
+    let values = response
         .headers
         .iter()
-        .find(|(key, _)| key.eq_ignore_ascii_case(name))
-        .map(|(_, value)| value.as_str())
+        .filter_map(|(key, value)| key.eq_ignore_ascii_case(name).then_some(value.as_str()))
+        .collect::<Vec<_>>();
+    match values.as_slice() {
+        [] => Ok(None),
+        [value] => Ok(Some(value)),
+        _ => Err(malformed("ambiguous QR response header")),
+    }
+}
+
+fn redirect_location<'a>(
+    response: &'a TransportResponse,
+    message: &'static str,
+) -> Result<&'a str> {
+    if !matches!(response.status, 301 | 302 | 303 | 307 | 308) {
+        return Err(qr_protocol(message));
+    }
+    unique_header(response, "location")?.ok_or_else(|| qr_protocol(message))
 }
 
 fn normalize_image_mime(value: &str) -> Option<&'static str> {
@@ -706,38 +734,65 @@ fn normalize_image_mime(value: &str) -> Option<&'static str> {
 
 /// Parse the `ptuiCB('..','..','..','..','..');` callback body.
 fn parse_ptui_arguments(body: &str) -> Result<Vec<String>> {
-    let start = body
-        .find("ptuiCB(")
-        .ok_or_else(|| malformed("missing ptuiCB callback"))?
-        + 7;
-    let end = body[start..]
-        .find(')')
-        .map(|offset| start + offset)
-        .ok_or_else(|| malformed("unterminated ptuiCB callback"))?;
+    let inner = body
+        .trim()
+        .strip_prefix("ptuiCB(")
+        .and_then(|value| value.strip_suffix(");"))
+        .ok_or_else(|| malformed("invalid ptuiCB callback envelope"))?;
     let mut arguments = Vec::new();
-    let mut current = String::new();
-    let mut quoted = false;
-    let mut escaped = false;
-    for character in body[start..end].chars() {
-        if escaped {
-            current.push(character);
-            escaped = false;
-        } else if character == '\\' && quoted {
-            escaped = true;
-        } else if character == '\'' {
-            if quoted {
-                arguments.push(std::mem::take(&mut current));
+    let mut chars = inner.chars().peekable();
+    loop {
+        while chars
+            .next_if(|character| character.is_ascii_whitespace())
+            .is_some()
+        {}
+        if chars.peek().is_none() {
+            break;
+        }
+        if chars.next() != Some('\'') {
+            return Err(malformed("invalid ptuiCB argument"));
+        }
+        let mut current = String::new();
+        let mut closed = false;
+        while let Some(character) = chars.next() {
+            match character {
+                '\\' => current.push(
+                    chars
+                        .next()
+                        .ok_or_else(|| malformed("malformed ptuiCB escape"))?,
+                ),
+                '\'' => {
+                    closed = true;
+                    break;
+                }
+                character => current.push(character),
             }
-            quoted = !quoted;
-        } else if quoted {
-            current.push(character);
+        }
+        if !closed {
+            return Err(malformed("unterminated ptuiCB argument"));
+        }
+        arguments.push(current);
+        while chars
+            .next_if(|character| character.is_ascii_whitespace())
+            .is_some()
+        {}
+        match chars.peek() {
+            None => break,
+            Some(',') => {
+                chars.next();
+                if chars
+                    .clone()
+                    .all(|character| character.is_ascii_whitespace())
+                {
+                    return Err(malformed("trailing ptuiCB separator"));
+                }
+            }
+            _ => return Err(malformed("missing ptuiCB separator")),
         }
     }
-    if quoted || escaped || arguments.is_empty() {
-        Err(malformed("malformed ptuiCB callback"))
-    } else {
-        Ok(arguments)
-    }
+    (!arguments.is_empty())
+        .then_some(arguments)
+        .ok_or_else(|| malformed("empty ptuiCB callback"))
 }
 
 fn qr_protocol(message: &'static str) -> QmError {
