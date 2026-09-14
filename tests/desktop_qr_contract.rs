@@ -19,7 +19,7 @@ const AUTHORIZE: &str = "https://graph.qq.com/oauth2.0/authorize";
 const EXCHANGE: &str = "https://u.y.qq.com/cgi-bin/musicu.fcg";
 const CALLBACK: &str =
     "https://ssl.ptlogin2.graph.qq.com/check_sig?uin=1000000001&ptsigx=SYNTHETIC_SIG&s_url=x";
-const CODE_REDIRECT: &str = "https://y.qq.com/portal/wx_redirect.html?login_type=1&surl=https://y.qq.com/&code=SYNTHETIC_CODE";
+const CODE_REDIRECT: &str = "https://y.qq.com/portal/wx_redirect.html?login_type=1&surl=https://y.qq.com/&state=state&code=SYNTHETIC_CODE";
 const NOW: u64 = 1_700_000_000_000;
 
 struct Step {
@@ -464,7 +464,7 @@ async fn desktop_qr_rejects_ambiguous_headers_redirects_and_callback_grammar() {
     let transport = Script::new(vec![
         qr_poll("0"),
         check_sig("https://graph.qq.com/oauth2.0/login_jump"),
-        authorize("https://y.qq.com/portal/wx_redirect.html?code=first&code=second"),
+        authorize("https://y.qq.com/portal/wx_redirect.html?login_type=1&surl=https://y.qq.com/&state=state&code=first&code=second"),
     ]);
     assert!(poll_desktop_qr(
         &client_with(transport.clone()),
@@ -482,7 +482,72 @@ async fn desktop_qr_rejects_ambiguous_headers_redirects_and_callback_grammar() {
 }
 
 #[tokio::test]
+async fn desktop_qr_binds_the_oauth_redirect_contract_before_exchange() {
+    for location in [
+        "https://y.qq.com/portal/wx_redirect.html?login_type=2&surl=https://y.qq.com/&state=state&code=SYNTHETIC_CODE",
+        "https://y.qq.com/portal/wx_redirect.html?login_type=1&surl=https://evil.example/&state=state&code=SYNTHETIC_CODE",
+        "https://y.qq.com/portal/wx_redirect.html?login_type=1&surl=https://y.qq.com/&state=wrong&code=SYNTHETIC_CODE",
+        "https://y.qq.com/portal/wx_redirect.html?login_type=1&surl=https://y.qq.com/&state=state&error=denied&code=SYNTHETIC_CODE",
+        "https://y.qq.com/portal/wx_redirect.html?login_type=1&login_type=1&surl=https://y.qq.com/&state=state&code=SYNTHETIC_CODE",
+    ] {
+        let transport = Script::new(vec![
+            qr_poll("0"),
+            check_sig("https://graph.qq.com/oauth2.0/login_jump"),
+            authorize(location),
+        ]);
+        assert!(poll_desktop_qr(
+            &client_with(transport.clone()),
+            "SYNTHETIC_QRSIG",
+            NOW,
+            CancellationToken::new(),
+        )
+        .await
+        .is_err());
+        assert_eq!(transport.seen().len(), 3, "bad callback must not reach exchange");
+    }
+}
+
+#[tokio::test]
 async fn desktop_qr_rejects_mismatched_final_urls_and_duplicate_locations() {
+    let transport = Script::new(vec![Step {
+        method: HttpMethod::Get,
+        url: PTQR_SHOW,
+        response: response(
+            200,
+            "https://ssl.ptlogin2.qq.com/unexpected",
+            vec![
+                ("content-type", "image/png"),
+                ("set-cookie", "qrsig=SYNTHETIC_QRSIG"),
+            ],
+            b"image".to_vec(),
+        ),
+    }]);
+    assert!(
+        create_desktop_qr(&client_with(transport), NOW, CancellationToken::new())
+            .await
+            .is_err()
+    );
+
+    let oversized_qrsig = format!("qrsig={}", "a".repeat(513));
+    let transport = Script::new(vec![Step {
+        method: HttpMethod::Get,
+        url: PTQR_SHOW,
+        response: response(
+            200,
+            PTQR_SHOW,
+            vec![
+                ("content-type", "image/png"),
+                ("set-cookie", &oversized_qrsig),
+            ],
+            b"image".to_vec(),
+        ),
+    }]);
+    assert!(
+        create_desktop_qr(&client_with(transport), NOW, CancellationToken::new())
+            .await
+            .is_err()
+    );
+
     let transport = Script::new(vec![Step {
         method: HttpMethod::Get,
         url: PTQR_LOGIN,

@@ -281,6 +281,7 @@ impl Cookies {
 
 /// Upper bound for the QR image returned by `ptqrshow`.
 pub const MAX_DESKTOP_QR_IMAGE_BYTES: usize = 256 * 1024;
+pub const MAX_DESKTOP_QRSIG_BYTES: usize = 512;
 /// Upper bound for the textual poll and redirect responses of the QR flow.
 pub const MAX_DESKTOP_QR_TEXT_BYTES: usize = 16 * 1024;
 /// Lifetime a host should advertise for a freshly created desktop QR challenge.
@@ -453,6 +454,7 @@ pub async fn create_desktop_qr(
     if !(200..300).contains(&response.status) {
         return Err(qr_protocol("ptqrshow returned a non-success status"));
     }
+    require_response_endpoint(&response, "ssl.ptlogin2.qq.com", "/ptqrshow")?;
     if response.body.is_empty() || response.body.len() > MAX_DESKTOP_QR_IMAGE_BYTES {
         return Err(malformed("empty or oversized QR image"));
     }
@@ -467,6 +469,9 @@ pub async fn create_desktop_qr(
         .filter(|value| !value.is_empty())
         .cloned()
         .ok_or_else(|| malformed("missing qrsig"))?;
+    if qrsig.len() > MAX_DESKTOP_QRSIG_BYTES {
+        return Err(malformed("oversized qrsig"));
+    }
     Ok(DesktopQrChallenge {
         image: response.body,
         mime_type: mime_type.to_owned(),
@@ -489,7 +494,10 @@ pub async fn poll_desktop_qr(
     if cancellation.is_cancelled() {
         return Err(QmError::cancelled());
     }
-    if qrsig.is_empty() || qrsig.len() > 512 || qrsig.bytes().any(|b| b.is_ascii_control()) {
+    if qrsig.is_empty()
+        || qrsig.len() > MAX_DESKTOP_QRSIG_BYTES
+        || qrsig.bytes().any(|b| b.is_ascii_control())
+    {
         return Err(qr_protocol("invalid QR attempt secret"));
     }
     let mut cookies = Cookies::default();
@@ -618,6 +626,19 @@ async fn complete_desktop_sign_in(
         .and_then(|base| base.join(location))
         .map_err(|_| malformed("invalid authorize redirect"))?;
     require_endpoint(&location, OAUTH_CODE_HOST, OAUTH_CODE_PATH)?;
+    let callback = oauth_callback_contract(OAuthLoginProvider::Qq);
+    for (name, expected) in [
+        ("login_type", callback.login_type),
+        ("surl", callback.surl),
+        ("state", "state"),
+    ] {
+        if exact_query_value(&location, name).as_deref() != Some(expected) {
+            return Err(malformed("authorization redirect contract mismatch"));
+        }
+    }
+    if location.query_pairs().any(|(name, _)| name == "error") {
+        return Err(qr_protocol("authorization redirect returned an error"));
+    }
     let codes = location
         .query_pairs()
         .filter_map(|(key, value)| (key == "code").then(|| value.into_owned()))
@@ -686,6 +707,17 @@ fn require_endpoint(url: &url::Url, host: &str, path: &str) -> Result<()> {
         Ok(())
     } else {
         Err(qr_protocol("unexpected QR redirect endpoint"))
+    }
+}
+
+fn exact_query_value(url: &url::Url, name: &str) -> Option<String> {
+    let values = url
+        .query_pairs()
+        .filter_map(|(key, value)| (key == name).then(|| value.into_owned()))
+        .collect::<Vec<_>>();
+    match values.as_slice() {
+        [value] => Some(value.clone()),
+        _ => None,
     }
 }
 
