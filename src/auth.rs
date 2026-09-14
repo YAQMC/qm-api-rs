@@ -294,11 +294,45 @@ const CHECK_SIG_HOST: &str = "ssl.ptlogin2.graph.qq.com";
 const CHECK_SIG_PATH: &str = "/check_sig";
 const OAUTH_AUTHORIZE_URL: &str = "https://graph.qq.com/oauth2.0/authorize";
 const OAUTH_AUTHORIZE_REFERER: &str = "https://graph.qq.com/";
+/// Fixed `surl` query value the browser-redirect login flow always returns to.
+pub const OAUTH_CALLBACK_SURL: &str = "https://y.qq.com/";
 const OAUTH_REDIRECT_URI: &str =
     "https://y.qq.com/portal/wx_redirect.html?login_type=1&surl=https://y.qq.com/";
 const OAUTH_CODE_HOST: &str = "y.qq.com";
 const OAUTH_CODE_PATH: &str = "/portal/wx_redirect.html";
 const OAUTH_CLIENT_ID: &str = "100497308";
+
+/// Host-visible callback contract for the browser-redirect login flow.
+///
+/// The host still decides which navigations it accepts, but it must match and
+/// validate the callback against this contract instead of duplicating the wire
+/// string, so a future redirect-URI change cannot drift out of sync.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OAuthCallbackContract {
+    pub host: &'static str,
+    pub path: &'static str,
+    pub login_type: &'static str,
+    pub surl: &'static str,
+}
+
+/// Returns the callback contract for `provider`.
+pub fn oauth_callback_contract(provider: OAuthLoginProvider) -> OAuthCallbackContract {
+    OAuthCallbackContract {
+        host: OAUTH_CODE_HOST,
+        path: OAUTH_CODE_PATH,
+        login_type: match provider {
+            OAuthLoginProvider::Qq => "1",
+            OAuthLoginProvider::Wechat => "2",
+        },
+        surl: OAUTH_CALLBACK_SURL,
+    }
+}
+
+/// The fixed `https://<host><path>` prefix a host callback URL starts with.
+pub fn oauth_callback_url_prefix(provider: OAuthLoginProvider) -> String {
+    let contract = oauth_callback_contract(provider);
+    format!("https://{}{}", contract.host, contract.path)
+}
 /// `ptqrtoken` is `hash33(qrsig)` with the default zero seed in both reference
 /// clients (L-1124 `utils.hash33(t, h=0)` and wxuyu `loginUtils.hash33`).
 const PTQR_TOKEN_SEED: i64 = 0;

@@ -1,10 +1,11 @@
 use qqmusic_api::{
     auth::{
-        create_desktop_qr, mobile_qr_launch_url, poll_desktop_qr, DesktopQrPoll,
-        DESKTOP_QR_LIFETIME_MS, MAX_DESKTOP_QR_IMAGE_BYTES, MAX_MOBILE_QR_ID_BYTES,
+        create_desktop_qr, mobile_qr_launch_url, oauth_callback_contract,
+        oauth_callback_url_prefix, poll_desktop_qr, DesktopQrPoll, DESKTOP_QR_LIFETIME_MS,
+        MAX_DESKTOP_QR_IMAGE_BYTES, MAX_MOBILE_QR_ID_BYTES,
     },
-    ApiTransport, CancellationToken, Client, Credential, HttpMethod, QmError, RedirectMode,
-    RetryClass, TransportRequest, TransportResponse,
+    ApiTransport, CancellationToken, Client, Credential, HttpMethod, OAuthLoginProvider, QmError,
+    RedirectMode, RetryClass, TransportRequest, TransportResponse,
 };
 use serde_json::json;
 use std::{
@@ -462,4 +463,28 @@ fn mobile_qr_launch_url_rejects_untrusted_identifiers() {
     assert!(mobile_qr_launch_url(&oversized).is_err());
     let boundary = "x".repeat(MAX_MOBILE_QR_ID_BYTES);
     assert!(mobile_qr_launch_url(&boundary).is_ok());
+}
+
+#[test]
+fn oauth_callback_contract_matches_the_wire_redirect() {
+    let prefix = oauth_callback_url_prefix(OAuthLoginProvider::Qq);
+    assert_eq!(prefix, "https://y.qq.com/portal/wx_redirect.html");
+    assert!(CODE_REDIRECT.starts_with(&prefix));
+
+    let qq = oauth_callback_contract(OAuthLoginProvider::Qq);
+    assert_eq!(qq.host, "y.qq.com");
+    assert_eq!(qq.path, "/portal/wx_redirect.html");
+    assert_eq!(qq.login_type, "1");
+    assert_eq!(qq.surl, "https://y.qq.com/");
+    assert!(CODE_REDIRECT.contains(&format!("login_type={}", qq.login_type)));
+    assert!(CODE_REDIRECT.contains(&format!("surl={}", qq.surl)));
+
+    let wechat = oauth_callback_contract(OAuthLoginProvider::Wechat);
+    assert_eq!(wechat.login_type, "2");
+    assert_eq!(wechat.host, qq.host);
+    assert_eq!(wechat.path, qq.path);
+    assert_eq!(
+        oauth_callback_url_prefix(OAuthLoginProvider::Wechat),
+        prefix
+    );
 }
