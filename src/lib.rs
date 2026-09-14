@@ -43,6 +43,7 @@
 
 pub mod account;
 pub mod artwork;
+pub mod auth;
 mod client;
 mod context;
 #[cfg(test)]

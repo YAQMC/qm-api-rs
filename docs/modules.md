@@ -436,6 +436,17 @@ user.raw_get_collect_album_list(param, credential) -> Value // 收藏专辑列�
 
 ## login（登录）
 
+桌面 OAuth 授权码交换使用 `auth::exchange_oauth_code`。`OAuthExchange` 绑定 QQ/微信、
+授权码、可选 gtk、当前尝试的 Cookie 和宿主时间；库负责固定端点、Web 请求格式、
+不自动重试、响应解码及会话 Cookie 整理，返回 `OAuthSession`。无 Cookie 的调用显式
+发送空 Cookie，不能借用 Client 的默认账户或环境 cookie jar；宿主仍负责 state/回调校验、
+尝试 ownership、取消及安全存储。
+
+响应限制 256 KiB，底层 transport 必须在读取时执行 `max_response_bytes`。错误不得包含
+原始授权码、Cookie 或登录响应；输出会话和旧 payload builder 的 Debug 均隐藏秘密。
+已取消、格式错误、业务失败和无效身份不产生可持久化会话；登录类型以请求选定的 provider
+为准。`build_oauth_code_exchange_request` 仅为兼容构造 API，不代表已执行交换。
+
 ```rust
 login.get_qrcode(QRLoginType) -> QR                       // QQ / WX / Mobile
 login.check_qrcode(&QR) -> QRLoginResult

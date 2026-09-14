@@ -38,12 +38,21 @@ pub const WECHAT_MUSIC_APP_ID: &str = "wx48db31d50e334801";
 /// The library owns `module`/`method`/`param`/`comm`; callers own transport,
 /// retry policy, cookies and login-attempt ownership. This keeps the upstream
 /// CGI contract in one place instead of duplicating literals per host.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct OAuthCodeExchangeRequest {
     pub module: &'static str,
     pub method: &'static str,
     pub param: Value,
     pub comm: Value,
+}
+
+impl std::fmt::Debug for OAuthCodeExchangeRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OAuthCodeExchangeRequest")
+            .field("module", &self.module)
+            .field("method", &self.method)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Build the authorization-code exchange request for QQ or WeChat desktop OAuth.
