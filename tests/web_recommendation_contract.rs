@@ -104,6 +104,8 @@ async fn personalized_web_feed_uses_explicit_account_and_preserves_card_semantic
         json!({"retcode":0,"v_shelf":[{"id":8,"v_niche":[{"v_card":[
             {"id":"7654321","title":"Songs","type":500,"subtype":511},
             {"id":"7654322","title":"Playlist","type":500,"subtype":0},
+            {"id":"7654323","title":"Daily 30","type":500,"subtype":510},
+            {"id":"","title":"More","type":-1},
             {"id":"future","title":"Future","type":9999}
         ]}]}]}),
         0,
@@ -118,7 +120,9 @@ async fn personalized_web_feed_uses_explicit_account_and_preserves_card_semantic
     assert_eq!(shelves[0].id, Some(8));
     assert_eq!(shelves[0].cards[0].kind, FeedCardKind::NewSongs);
     assert_eq!(shelves[0].cards[1].kind, FeedCardKind::Playlist);
-    assert_eq!(shelves[0].cards[2].kind, FeedCardKind::Other);
+    assert_eq!(shelves[0].cards[2].kind, FeedCardKind::DailySonglist);
+    assert_eq!(shelves[0].cards[3].kind, FeedCardKind::Other);
+    assert_eq!(shelves[0].cards[4].kind, FeedCardKind::Other);
     assert_eq!(api.credential().musicid, 10001);
     assert_eq!(transport.calls.load(Ordering::Relaxed), 1);
 }

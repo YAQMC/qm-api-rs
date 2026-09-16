@@ -8,6 +8,7 @@ use serde_json::Value;
 pub enum FeedCardKind {
     Playlist,
     NewSongs,
+    DailySonglist,
     Songlist,
     Artist,
     Other,
@@ -28,20 +29,22 @@ impl<'de> Deserialize<'de> for FeedCard {
         if !raw.is_object() {
             return Err(serde::de::Error::custom("feed card must be an object"));
         }
-        let id = scalar_id(&raw["id"]);
-        if id.trim().is_empty() {
-            return Err(serde::de::Error::custom("feed card requires an identifier"));
-        }
-        let title = raw["title"]
-            .as_str()
-            .ok_or_else(|| serde::de::Error::custom("feed card requires a text title"))?;
         let kind = match (raw["type"].as_i64(), raw["subtype"].as_i64()) {
             (Some(500), Some(511)) => FeedCardKind::NewSongs,
+            (Some(500), Some(510)) => FeedCardKind::DailySonglist,
             (Some(500), _) => FeedCardKind::Playlist,
             (Some(700), _) => FeedCardKind::Songlist,
             (Some(600), _) => FeedCardKind::Artist,
             _ => FeedCardKind::Other,
         };
+        let title = raw["title"]
+            .as_str()
+            .ok_or_else(|| serde::de::Error::custom("feed card requires a text title"))?;
+        let is_action_button = raw["type"].as_i64().is_some_and(|type_code| type_code < 0);
+        let id = scalar_id(&raw["id"]);
+        if id.trim().is_empty() && !is_action_button {
+            return Err(serde::de::Error::custom("feed card requires an identifier"));
+        }
         Ok(Self {
             id,
             title: title.to_owned(),
