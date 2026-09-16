@@ -682,3 +682,23 @@ fn oauth_callback_contract_matches_the_wire_redirect() {
         prefix
     );
 }
+
+#[tokio::test]
+async fn desktop_qr_sniffs_png_when_content_type_header_is_missing() {
+    let transport = Script::new(vec![Step {
+        method: HttpMethod::Get,
+        url: PTQR_SHOW,
+        response: response(
+            200,
+            PTQR_SHOW,
+            vec![("set-cookie", "qrsig=SYNTHETIC_QRSIG; Path=/")],
+            b"\x89PNG\r\n\x1a\nSYNTHETIC".to_vec(),
+        ),
+    }]);
+    let client = client_with(transport);
+    let challenge = create_desktop_qr(&client, NOW, CancellationToken::new())
+        .await
+        .expect("challenge without content-type");
+    assert_eq!(challenge.mime_type, "image/png");
+}
+

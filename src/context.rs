@@ -959,6 +959,7 @@ pub(crate) fn parse_cgi_envelope(text: &str, index: usize) -> Result<CgiReply<Va
     }
     let req0 = env
         .get(format!("req_{index}"))
+        .or_else(|| (index == 0).then(|| env.get("req")).flatten())
         .cloned()
         .ok_or_else(|| QmError::Protocol {
             stage: "cgi-envelope",
@@ -983,6 +984,15 @@ mod tests {
     fn parse_envelope_success() {
         let text =
             r#"{"code":0,"req_0":{"code":0,"data":{"songmid":"001X3HEN1oK0Jr","name":"晴天"}}}"#;
+        let reply = parse_cgi_envelope(text, 0).unwrap();
+        assert_eq!(reply.code, 0);
+        assert_eq!(reply.data["name"], "晴天");
+    }
+
+    #[test]
+    fn parse_envelope_accepts_legacy_req_key_for_index_zero() {
+        let text =
+            r#"{"code":0,"req":{"code":0,"data":{"songmid":"001X3HEN1oK0Jr","name":"晴天"}}}"#;
         let reply = parse_cgi_envelope(text, 0).unwrap();
         assert_eq!(reply.code, 0);
         assert_eq!(reply.data["name"], "晴天");

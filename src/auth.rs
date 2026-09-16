@@ -460,6 +460,15 @@ pub async fn create_desktop_qr(
     }
     let mime_type = unique_header(&response, "content-type")?
         .and_then(normalize_image_mime)
+        .or_else(|| {
+            if response.body.starts_with(b"\x89PNG\r\n\x1a\n") {
+                Some("image/png")
+            } else if response.body.starts_with(b"\xff\xd8\xff") {
+                Some("image/jpeg")
+            } else {
+                None
+            }
+        })
         .ok_or_else(|| malformed("unsupported QR image type"))?;
     let mut cookies = Cookies::default();
     cookies.absorb(&response.headers)?;
