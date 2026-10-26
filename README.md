@@ -4,7 +4,7 @@
 
 独立实现的 Rust 版本，未直接使用任何上游源码文件；接口形状与协议行为参考
 [L-1124/QQMusicApi](https://github.com/L-1124/QQMusicApi) (Python)，并自主实现
-桌面客户端互操作所需的 `raw_*` 请求。见 [PROVENANCE.md](./PROVENANCE.md)。
+桌面客户端互操作所需的 `raw_*` 请求。许可证与第三方版权声明见 [LICENSE](./LICENSE) 和 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)。来源审阅记录仅保留在维护者本地。
 
 > [!NOTE]
 > **音乐平台不易，请尊重版权，支持正版。**
@@ -63,6 +63,7 @@ cargo run --example demo
 - [下载歌曲（获取播放链接）](./docs/download.md)
 - [错误处理](./docs/error-handling.md)
 - [架构与签名](./docs/architecture.md)
+- [QQ 协议与宿主边界](./docs/api-ownership.md)
 - [模块 API 参考](./docs/modules.md)
 
 ## 模块概览

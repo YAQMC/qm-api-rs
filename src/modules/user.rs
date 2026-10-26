@@ -28,6 +28,46 @@ pub struct UserApi {
 }
 
 impl UserApi {
+    /// Validate and read the current account without selecting another map entry.
+    pub async fn get_current_profile(
+        &self,
+        credential: &Credential,
+        cancellation: crate::CancellationToken,
+    ) -> Result<CurrentUserProfile> {
+        if cancellation.is_cancelled() {
+            return Err(crate::QmError::Network(crate::NetworkError {
+                kind: crate::NetworkErrorKind::Cancelled,
+                message: "profile request cancelled".into(),
+            }));
+        }
+        if credential.musicid <= 0 || credential.musickey.is_empty() {
+            return Err(crate::QmError::CredentialInvalid(
+                "profile requires credentials".into(),
+            ));
+        }
+        let uin = credential.str_musicid();
+        let mut options = RequestOptions::default();
+        options.require_login = true;
+        options.credential = Some(credential.clone());
+        options.cancellation = cancellation.clone();
+        let data = self
+            .base
+            .cgi(
+                "userInfo.BaseUserInfoServer",
+                "get_user_baseinfo_v2",
+                json!({"vec_uin":[uin], "need_profile":1}),
+                options,
+            )
+            .await?;
+        if cancellation.is_cancelled() {
+            return Err(crate::QmError::Network(crate::NetworkError {
+                kind: crate::NetworkErrorKind::Cancelled,
+                message: "profile request cancelled".into(),
+            }));
+        }
+        CurrentUserProfile::parse(&data, &uin)
+    }
+
     pub(crate) fn new(context: std::sync::Arc<crate::context::ApiContext>) -> Self {
         UserApi {
             base: ApiModule::new(context),

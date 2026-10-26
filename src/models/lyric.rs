@@ -1,5 +1,6 @@
 //! 歌词解密与 Lyric API 返回模型定义 (对应 Python 端 `models/lyric.py`).
 
+use base64::Engine as _;
 use serde::Deserialize;
 use serde_json::Value;
 use std::io::Read;
@@ -175,4 +176,49 @@ pub struct AIDictItem {
 pub struct GetAIDictResponse {
     #[serde(alias = "dictList")]
     pub dict_list: Vec<AIDictItem>,
+}
+
+/// Decode decrypted/base64 lyric text. Opaque ciphertext or binary base64 is
+/// rejected instead of becoming visible plain lyrics.
+pub fn decode_lyric_text(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    if let Some(decoded) = decode_base64_lyric(value) {
+        return Some(decoded);
+    }
+    if opaque_lyric_encoding(value).is_some() {
+        return None;
+    }
+    Some(value.to_owned())
+}
+fn decode_base64_lyric(value: &str) -> Option<String> {
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(value)
+        .ok()?;
+    let decoded = String::from_utf8(decoded).ok()?;
+    is_structured_lyric(&decoded).then_some(decoded)
+}
+
+fn is_structured_lyric(value: &str) -> bool {
+    let value = value.trim_start();
+    value.starts_with('[') || value.starts_with("<QrcInfos")
+}
+
+fn opaque_lyric_encoding(value: &str) -> Option<&'static str> {
+    if value.len() < 64 || value.bytes().any(|byte| byte.is_ascii_whitespace()) {
+        return None;
+    }
+    if value.len().is_multiple_of(2) && value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Some("hex");
+    }
+    if value.len().is_multiple_of(4)
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'='))
+    {
+        return Some("base64");
+    }
+    None
 }

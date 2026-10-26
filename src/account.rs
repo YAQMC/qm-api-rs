@@ -4,6 +4,7 @@
 //! compatibility envelope while hosts migrate their legacy song/playlist DTOs.
 //! Offsets count upstream rows, not successfully rendered songs.
 
+use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::{
@@ -753,4 +754,187 @@ mod tests {
             matches!(result, Err(QmError::ValueError(message)) if message == "invalid playlist track mutation")
         );
     }
+}
+
+/// Server acknowledgement only. Hosts must reconcile `Unknown` with a safe read,
+/// and must never retry the mutation automatically.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WriteOutcome {
+    Accepted,
+    Rejected,
+    Unknown,
+}
+
+/// Decode QQ's acknowledgement fields and business codes in the API library.
+pub fn classify_write_reply(
+    operation: &AccountWrite,
+    reply: &crate::CgiReply<Value>,
+) -> Result<WriteOutcome> {
+    if reply.code != 0 {
+        let track_write = matches!(
+            operation,
+            AccountWrite::FavoriteSong { .. } | AccountWrite::PlaylistTracks { .. }
+        );
+        if track_write && reply.code == 80092 {
+            return Ok(WriteOutcome::Rejected);
+        }
+        let ret_code = reply
+            .data
+            .get("retCode")
+            .and_then(|v| v.as_i64().or_else(|| v.as_str()?.parse().ok()));
+        if track_write && reply.code == 80105 && ret_code == Some(0) {
+            return Ok(WriteOutcome::Unknown);
+        }
+        return Err(reply.error());
+    }
+    Ok(match account_write_accepted(&reply.data) {
+        Ok(true) => WriteOutcome::Accepted,
+        Ok(false) => WriteOutcome::Rejected,
+        Err(_) => WriteOutcome::Unknown,
+    })
+}
+
+/// Execute once and classify the acknowledgement; uncertain network outcomes
+/// remain errors for the host's reconciliation policy.
+pub async fn write_checked(
+    client: &Client,
+    credential: &Credential,
+    operation: AccountWrite,
+    cancellation: CancellationToken,
+) -> Result<WriteOutcome> {
+    let reply = write(client, credential, operation.clone(), cancellation).await?;
+    classify_write_reply(&operation, &reply)
+}
+fn account_write_accepted(data: &Value) -> Result<bool> {
+    let failed = ["v_failedPlaylistId", "v_failTids"].into_iter().any(|key| {
+        data.get(key)
+            .and_then(Value::as_array)
+            .is_some_and(|values| !values.is_empty())
+    });
+    if failed {
+        return Ok(false);
+    }
+    let ret_code = data
+        .get("retCode")
+        .and_then(|value| value.as_i64().or_else(|| value.as_str()?.parse().ok()));
+    if ret_code.is_some_and(|code| code != 0) {
+        return Ok(false);
+    }
+    if let Some(update_time) = data
+        .pointer("/result/updateTime")
+        .or_else(|| data.get("updateTime"))
+    {
+        return valid_update_time(update_time)
+            .then_some(true)
+            .ok_or(QmError::ApiData("unconfirmed account write result".into()));
+    }
+    let code = ret_code
+        .or_else(|| {
+            data.get("result")
+                .filter(|value| !value.is_object())
+                .and_then(|value| value.as_i64().or_else(|| value.as_str()?.parse().ok()))
+        })
+        .ok_or(QmError::ApiData("unconfirmed account write result".into()))?;
+    Ok(code == 0)
+}
+
+fn valid_update_time(value: &Value) -> bool {
+    value
+        .as_u64()
+        .or_else(|| value.as_str()?.trim().parse::<u64>().ok())
+        .is_some_and(|value| value > 0)
+}
+
+// Upstream playlist metadata aliases. The host retains ownership and edit policy.
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountPlaylistCreator {
+    #[serde(default, alias = "nickname")]
+    pub nick: String,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountPlaylistCapabilities {
+    #[serde(default)]
+    pub can_add: bool,
+    #[serde(default)]
+    pub can_remove: bool,
+    #[serde(default)]
+    pub can_rename: bool,
+    #[serde(default)]
+    pub can_delete: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountPlaylistMetadata {
+    #[serde(
+        default,
+        rename = "tid",
+        alias = "disstid",
+        alias = "dissid",
+        alias = "id"
+    )]
+    pub tid: Option<Value>,
+    #[serde(default, rename = "dirId", alias = "dirid")]
+    pub dir_id: Option<u64>,
+    #[serde(default, rename = "playlistMid", alias = "playlist_mid", alias = "mid")]
+    pub playlist_mid: Option<String>,
+    #[serde(default, rename = "collectionType", alias = "source", alias = "type")]
+    pub collection_type: Option<Value>,
+    #[serde(
+        default,
+        rename = "dirName",
+        alias = "dissname",
+        alias = "title",
+        alias = "name"
+    )]
+    pub title: Option<String>,
+    #[serde(default, rename = "desc", alias = "description")]
+    pub description: Option<String>,
+    #[serde(
+        default,
+        rename = "picUrl",
+        alias = "picurl",
+        alias = "logo",
+        alias = "cover"
+    )]
+    pub picture_url: Option<String>,
+    #[serde(
+        default,
+        rename = "trackCount",
+        alias = "songnum",
+        alias = "songNum",
+        alias = "song_count",
+        alias = "song_cnt"
+    )]
+    pub track_count: u64,
+    #[serde(default, rename = "updateTime", alias = "update_time", alias = "mtime")]
+    pub updated_at_ms: Option<u64>,
+    #[serde(default)]
+    pub ownership: Option<String>,
+    #[serde(default, rename = "isOwner")]
+    pub is_owner: Option<bool>,
+    #[serde(default)]
+    pub creator: AccountPlaylistCreator,
+    #[serde(default, alias = "nickname")]
+    pub nick: String,
+    #[serde(default)]
+    pub capabilities: AccountPlaylistCapabilities,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OwnedPlaylistEditFields {
+    #[serde(default, rename = "dirId", alias = "dirid")]
+    pub provider_dir_id: Option<u64>,
+    #[serde(default, rename = "dirName")]
+    pub original_title: Option<String>,
+    #[serde(default, rename = "desc")]
+    pub description: Option<String>,
+    #[serde(default, rename = "picUrl")]
+    pub picture_url: Option<String>,
+    #[serde(default, rename = "tagNameList")]
+    pub tag_names: Option<Vec<String>>,
 }

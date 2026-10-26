@@ -701,4 +701,3 @@ async fn desktop_qr_sniffs_png_when_content_type_header_is_missing() {
         .expect("challenge without content-type");
     assert_eq!(challenge.mime_type, "image/png");
 }
-

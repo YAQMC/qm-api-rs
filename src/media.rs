@@ -68,9 +68,11 @@ impl std::fmt::Debug for MediaSource {
 }
 
 impl MediaSource {
-    /// 是否可获得实际播放地址 (无权限或 `result != 0` 时不可播).
+    /// 是否可获得实际播放地址及加密来源所需的密钥.
     pub fn playable(&self) -> bool {
-        self.result == 0 && !self.url.is_empty()
+        self.result == 0
+            && !self.url.trim().is_empty()
+            && (!self.encrypted || !self.ekey.trim().is_empty())
     }
 
     /// 绝对过期时刻 (解析时刻 + TTL), 用于 URL 刷新调度.
@@ -135,12 +137,12 @@ impl MediaSource {
             .first()
             .ok_or_else(|| QmError::ApiData("获取播放链接失败".into()))?;
         // purl 为空 (如 result=104003 无权限) 时, 不拼出假的 CDN 根地址.
-        let url = if item.purl.is_empty() {
+        let url = if item.purl.trim().is_empty() {
             String::new()
         } else {
-            format!("{}{}", api._song_url_fallback_domain, item.purl)
+            crate::playback::normalize_cdn_url(api._song_url_fallback_domain, &item.purl)?
         };
-        let encrypted = file_type.is_encrypted() && !item.ekey.is_empty();
+        let encrypted = file_type.is_encrypted();
         let file_ext = file_type.e().trim_start_matches('.').to_string();
         Ok(MediaSource {
             song_id: song.id,
@@ -178,7 +180,7 @@ pub async fn download_quality(
         .context
         .request_http_bytes(&source.url, credential)
         .await?;
-    if source.encrypted && !source.ekey.is_empty() {
+    if source.encrypted {
         crate::qmc::decrypt_qmc(&bytes, Some(&source.ekey))
     } else {
         // 未加密音质: 直接返回, 扩展名按实际内容嗅探.
@@ -223,7 +225,7 @@ pub async fn download_best(
 /// 解析歌曲**最高实际可播放**音质的来源描述 (只 resolve, 不下载).
 ///
 /// 按可用音质从高到低逐个 resolve, 返回第一个 `playable()` 的来源
-/// (`result == 0` 且 URL 非空). 仅在当前档位表示 **权限不足 / 该音质不可播**
+/// (`result == 0`、URL 非空且加密来源有密钥). 仅在当前档位表示 **权限不足 / 该音质不可播**
 /// 时降级; 限流、鉴权失效、协议错误、传输错误立即返回, 不会连打下一档.
 /// `result == 0` 但 `purl` 为空视为协议数据不一致, 不伪装成 VIP 权限错误.
 pub async fn best_playable(
@@ -254,7 +256,12 @@ pub async fn best_playable(
 
 /// `result == 0 && url empty` 是数据不一致, 不能构造成 `CgiApi(code=0)` 再声称需要 VIP.
 pub(crate) fn unplayable_error(source: &MediaSource) -> QmError {
-    if source.result == 0 {
+    if source.result == 0 && source.encrypted && source.ekey.trim().is_empty() {
+        QmError::Protocol {
+            stage: "media-key",
+            message: "encrypted playback source is missing its decryption key".into(),
+        }
+    } else if source.result == 0 {
         QmError::Protocol {
             stage: "media-url",
             message: "result is 0 but playback URL is empty".into(),
@@ -332,7 +339,15 @@ mod tests {
     #[test]
     fn non_empty_purl_produces_full_url() {
         let src = build_source("/a.mflac?k=1", 0, SongQuality::Flac.file_type(true));
-        assert_eq!(src.url, format!("{}{}", domain(), "/a.mflac?k=1"));
+        assert_eq!(src.url, format!("{}a.mflac?k=1", domain()));
+        assert!(src.playable());
+    }
+
+    #[test]
+    fn absolute_cdn_purl_is_not_prefixed_again() {
+        let url = "https://aqqmusic.tc.qq.com/a.mflac?k=1";
+        let src = build_source(url, 0, SongQuality::Flac.file_type(true));
+        assert_eq!(src.url, url);
         assert!(src.playable());
     }
 

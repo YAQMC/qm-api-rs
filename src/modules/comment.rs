@@ -7,6 +7,10 @@ use crate::context::RequestOptions;
 use crate::error::Result;
 use crate::models::comment::*;
 use crate::models::Credential;
+use crate::{CancellationToken, Pager, QmError};
+
+/// Per-response protection, independent of the number of pages in a song.
+pub const MAX_SONG_COMMENTS_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 
 /// 评论 API.
 #[derive(Clone, Debug)]
@@ -14,7 +18,113 @@ pub struct CommentApi {
     pub(crate) base: ApiModule,
 }
 
+#[cfg(test)]
+#[path = "comment_tests.rs"]
+mod tests;
+
 impl CommentApi {
+    /// Read public song comments or a reply thread without inheriting login state.
+    /// `limit` requests 1–50 rows; the service may return extra rows, which are
+    /// preserved. Use `song_comments_pages` to read more pages on demand.
+    pub async fn get_song_comments(
+        &self,
+        request: &SongCommentsRequest,
+    ) -> Result<SongCommentsPage> {
+        self.get_song_comments_with_cancellation(request, CancellationToken::new())
+            .await
+    }
+
+    /// Read one page with cancellation during network I/O and background parsing.
+    pub async fn get_song_comments_with_cancellation(
+        &self,
+        request: &SongCommentsRequest,
+        cancellation: CancellationToken,
+    ) -> Result<SongCommentsPage> {
+        request.validate()?;
+        let mut params = json!({"BizType":CommentBizType::Song.value(), "BizSubType":2,
+            "BizId":request.song_id.to_string(), "PageSize":request.limit,
+            "PageNum":request.page - 1, "LastCommentSeqNo":request.last_seq, "PicEnable":1});
+        let (module, method) = if let Some(parent) = &request.parent_id {
+            params["RootCmId"] = json!(parent);
+            params["CmId"] = json!(parent);
+            (
+                "music.globalComment.CommentReadServer",
+                "GetReplyCommentList",
+            )
+        } else if request.sort == SongCommentSort::Hot {
+            params["HotType"] = json!(1);
+            params["WithAirborne"] = json!(0);
+            ("music.globalComment.CommentRead", "GetHotCommentList")
+        } else {
+            params["HashTagID"] = json!("");
+            params["SelfSeeEnable"] = json!(1);
+            params["AudioEnable"] = json!(1);
+            ("music.globalComment.CommentRead", "GetNewCommentList")
+        };
+        let mut options = RequestOptions::default();
+        options.platform = Some(crate::Platform::Web);
+        options.credential = Some(Credential::default());
+        options.cancellation = cancellation.clone();
+        let data = self
+            .base
+            .context
+            .request_cgi_with_response_limit(
+                module,
+                method,
+                params,
+                &options,
+                Some(MAX_SONG_COMMENTS_RESPONSE_BYTES),
+            )
+            .await?
+            .require_success()?;
+        let parse = tokio::task::spawn_blocking(move || SongCommentsPage::parse(data));
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => Err(QmError::cancelled()),
+            result = parse => result.map_err(|_| QmError::Protocol {
+                stage: "comment-parse",
+                message: "comment parser task failed".into(),
+            })?,
+        }
+    }
+
+    /// Fetch exactly one upstream page per `next().await`, with no total-row or
+    /// total-page cap. Drop each consumed page instead of calling `collect()` for
+    /// large threads. Empty pages, repeated sequence numbers and page overflow
+    /// terminate iteration. An error terminates the pager as for other `Pager`s.
+    pub fn song_comments_pages(
+        &self,
+        request: SongCommentsRequest,
+        cancellation: CancellationToken,
+    ) -> Pager<SongCommentsPage> {
+        let api = self.clone();
+        let initial = json!({"page": request.page, "last_seq": request.last_seq});
+        Pager::new(
+            initial,
+            move |params| {
+                let api = api.clone();
+                let mut request = request.clone();
+                let cancellation = cancellation.clone();
+                request.page = params["page"]
+                    .as_u64()
+                    .and_then(|page| u32::try_from(page).ok())
+                    .unwrap_or(0);
+                request.last_seq = params["last_seq"].as_str().unwrap_or_default().to_owned();
+                Box::pin(async move {
+                    api.get_song_comments_with_cancellation(&request, cancellation)
+                        .await
+                })
+            },
+            |params, page: &SongCommentsPage| {
+                let (next_page, last_seq) = page.next_position(
+                    u32::try_from(params["page"].as_u64()?).ok()?,
+                    params["last_seq"].as_str()?,
+                )?;
+                Some(json!({"page": next_page, "last_seq": last_seq}))
+            },
+        )
+    }
+
     pub(crate) fn new(context: std::sync::Arc<crate::context::ApiContext>) -> Self {
         CommentApi {
             base: ApiModule::new(context),

@@ -337,6 +337,9 @@ songlist.raw_cancel_fav_audio(param, credential) -> Value              // 取消
 ## comment（评论）
 
 ```rust
+comment.get_song_comments(&SongCommentsRequest) -> SongCommentsPage
+comment.get_song_comments_with_cancellation(&SongCommentsRequest, CancellationToken) -> SongCommentsPage
+comment.song_comments_pages(SongCommentsRequest, CancellationToken) -> Pager<SongCommentsPage>
 comment.get_comment_count(biz_id, CommentBizType, biz_sub_type) -> CommentCountResponse
 comment.get_hot_comments(biz_id, page_num, page_size, last_seq, CommentBizType, sub_type) -> CommentListResponse
 comment.get_new_comments(biz_id, page_num, page_size, last_seq, CommentBizType, sub_type) -> CommentListResponse
@@ -350,8 +353,12 @@ comment.raw_get_reply_comments(param, credential) -> Value   // 回复列表
 comment.raw_update_hot_comment(param, credential) -> Value   // 更新热评状态 (需要登录)
 ```
 
-`CommentBizType`：`Song(0)` `Album(1)` `Mv(2)` `Songlist(3)` `Singer(4)` `Video(5)` `Audio(6)` `AudioAlbum(7)`。
+`CommentBizType`：`Song(1)` `Album(2)` `Mv(4)` `Songlist(3)` `Singer(4)` `Video(5)` `Audio(6)` `AudioAlbum(7)`。
 歌曲类型默认子类型 `biz_sub_type = 2`。
+
+`get_song_comments` 每次只取一页，`limit` 是期望大小，允许返回额外条目。`song_comments_pages`
+按需取页，无总评论数限制；用 `next().await` 消费和释放各页，避免 `collect()` 累积整个评论区。
+每页响应有独立的 4 MiB 解压字节保护及取消支持，详见 [QQ 协议与宿主边界](api-ownership.md)。
 
 ## recommend（推荐）
 

@@ -59,6 +59,7 @@ pub mod lyric_parser;
 pub mod media;
 mod mqtt;
 mod pagination;
+pub mod playback;
 mod qimei;
 pub mod qmc;
 mod rate_limiter;

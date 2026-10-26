@@ -286,7 +286,7 @@ async fn comments_read_contract() {
         method: "GetHotCommentList",
         param_ok: |p| {
             p.get("BizId").and_then(Value::as_str) == Some("99")
-                && p.get("BizType").and_then(Value::as_i64) == Some(0)
+                && p.get("BizType").and_then(Value::as_i64) == Some(1)
                 && p.get("HotType").and_then(Value::as_i64) == Some(1)
                 && p.get("PageSize").and_then(Value::as_i64) == Some(10)
         },

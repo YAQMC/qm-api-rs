@@ -41,7 +41,7 @@ pub(crate) fn map_cgi_code(code: i64, data: &Value) -> QmError {
     let redacted = crate::error::redact_payload(&data.to_string(), 400);
     match code {
         2000 => QmError::SignatureRequired,
-        2001 => QmError::RateLimited,
+        2001 | 104604 => QmError::RateLimited,
         1000 | 104401 | 104400 => QmError::CredentialExpired(format!("code {code}")),
         _ => QmError::CgiApi {
             code,

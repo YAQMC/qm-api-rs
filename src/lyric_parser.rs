@@ -363,3 +363,309 @@ mod tests {
         assert_eq!(lrc_time_to_ms("01:30"), Some(90_000));
     }
 }
+
+// Playback-facing syntax decoding, independent of any application's DTOs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LyricFormat {
+    Qrc,
+    Lrc,
+    Plain,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TimedLyricWord {
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub text: String,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TimedLyricLine {
+    pub index: usize,
+    pub start_ms: Option<u64>,
+    pub end_ms: Option<u64>,
+    pub text: String,
+    pub words: Vec<TimedLyricWord>,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParsedLyric {
+    pub format: LyricFormat,
+    pub offset_ms: i64,
+    pub lines: Vec<TimedLyricLine>,
+}
+
+pub fn parse_playback_qrc(raw: &str) -> Option<ParsedLyric> {
+    let content = extract_qrc_content(raw).unwrap_or_else(|| raw.to_owned());
+    let mut lines = Vec::new();
+    for (line_number, raw_line) in content.lines().enumerate() {
+        let line = raw_line.trim();
+        let Some((line_start, line_duration, body)) = parse_qrc_line_header(line) else {
+            continue;
+        };
+        let line_end = line_start.saturating_add(line_duration);
+        let words = parse_qrc_words(body, line_start, line_end);
+        let text = if words.is_empty() {
+            clean_text(body)
+        } else {
+            words.iter().map(|word| word.text.as_str()).collect()
+        };
+        if text.trim().is_empty() {
+            continue;
+        }
+        lines.push(TimedLyricLine {
+            index: line_number,
+            start_ms: Some(line_start),
+            end_ms: Some(line_end),
+            text,
+            words,
+        });
+    }
+    if lines.is_empty() {
+        return None;
+    }
+    Some(ParsedLyric {
+        format: LyricFormat::Qrc,
+        offset_ms: 0,
+        lines,
+    })
+}
+
+fn extract_qrc_content(raw: &str) -> Option<String> {
+    if !raw.trim_start().starts_with('<') {
+        return None;
+    }
+    let mut reader = quick_xml::Reader::from_str(raw);
+    reader.config_mut().trim_text(false);
+    loop {
+        match reader.read_event() {
+            Ok(quick_xml::events::Event::Start(element))
+            | Ok(quick_xml::events::Event::Empty(element)) => {
+                for attribute in element.attributes().flatten() {
+                    if attribute.key.as_ref() == b"LyricContent" {
+                        // QRC payloads can contain literal line breaks in an XML
+                        // attribute. Decode/unescape without normalizing them to spaces.
+                        let decoded = reader.decoder().decode(&attribute.value).ok()?;
+                        return quick_xml::escape::unescape(&decoded)
+                            .ok()
+                            .map(|value| value.into_owned());
+                    }
+                }
+            }
+            Ok(quick_xml::events::Event::Eof) | Err(_) => return None,
+            _ => {}
+        }
+    }
+}
+
+fn parse_qrc_line_header(line: &str) -> Option<(u64, u64, &str)> {
+    let close = line.find(']')?;
+    let header = line.strip_prefix('[')?.get(..close - 1)?;
+    let mut parts = header.split(',');
+    let start = parts.next()?.trim().parse().ok()?;
+    let duration = parts.next()?.trim().parse().ok()?;
+    Some((start, duration, &line[close + 1..]))
+}
+
+fn parse_qrc_words(body: &str, line_start: u64, line_end: u64) -> Vec<TimedLyricWord> {
+    let mut words = Vec::new();
+    let mut text_start = 0;
+    // An inner '(' invalidates the outer timing candidate. Visit every byte
+    // once instead of repeatedly searching for the same closing parenthesis.
+    let mut candidate = None;
+    for (close, byte) in body.bytes().enumerate() {
+        if byte == b'(' {
+            candidate = Some(close);
+            continue;
+        }
+        if byte != b')' {
+            continue;
+        }
+        let Some(open) = candidate.take() else {
+            continue;
+        };
+        let timing = &body[open + 1..close];
+        let values = timing.split(',').take(3).map(str::trim).collect::<Vec<_>>();
+        let parsed = values.len() >= 2
+            && values[0]
+                .chars()
+                .all(|character| character.is_ascii_digit())
+            && values[1]
+                .chars()
+                .all(|character| character.is_ascii_digit());
+        if !parsed {
+            continue;
+        }
+        let start = values[0].parse::<u64>().unwrap_or(line_start);
+        let duration = values[1].parse::<u64>().unwrap_or(0);
+        let text = &body[text_start..open];
+        if !text.is_empty() {
+            let start_ms = start.clamp(line_start, line_end);
+            let end_ms = start.saturating_add(duration).clamp(start_ms, line_end);
+            words.push(TimedLyricWord {
+                start_ms,
+                end_ms,
+                text: text.to_owned(),
+            });
+        }
+        text_start = close + 1;
+    }
+    if text_start < body.len() {
+        let trailing = &body[text_start..];
+        if !trailing.is_empty() {
+            let start = words.last().map_or(line_start, |word| word.end_ms);
+            words.push(TimedLyricWord {
+                start_ms: start,
+                end_ms: line_end.max(start),
+                text: trailing.to_owned(),
+            });
+        }
+    }
+    words
+}
+
+#[cfg(test)]
+mod qrc_scanning_tests {
+    use super::*;
+    #[test]
+    fn nested_literal_parentheses_preserve_unicode_and_inner_word_timing() {
+        let lyric = parse_playback_qrc("[0,1000]花田错 ((342,114)Live)").unwrap();
+        assert_eq!(lyric.lines[0].text, "花田错 (Live)");
+        assert_eq!(lyric.lines[0].words[0].start_ms, 342);
+        assert_eq!(lyric.lines[0].words[0].end_ms, 456);
+        let malformed = parse_playback_qrc("[0,1000]中文((oops),句末").unwrap();
+        assert_eq!(malformed.lines[0].text, "中文((oops),句末");
+    }
+
+    #[test]
+    fn long_invalid_parenthesis_run_does_not_rescan_the_suffix() {
+        let text = format!("{}x)", "(".repeat(256 * 1024));
+        let start = std::time::Instant::now();
+        let words = parse_qrc_words(&text, 0, 1000);
+        assert_eq!(words[0].text, text);
+        assert!(start.elapsed() < std::time::Duration::from_secs(2));
+    }
+}
+
+pub fn parse_playback_lrc(raw: &str) -> Option<ParsedLyric> {
+    let timed = parse_timed_lrc(raw);
+    if timed.is_empty() {
+        let plain = raw
+            .lines()
+            .filter(|line| !line.trim_start().starts_with('['))
+            .map(clean_text)
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>();
+        if plain.is_empty() {
+            return None;
+        }
+        return Some(ParsedLyric {
+            format: LyricFormat::Plain,
+            offset_ms: lrc_offset(raw),
+            lines: plain
+                .into_iter()
+                .enumerate()
+                .map(|(index, text)| TimedLyricLine {
+                    index,
+                    start_ms: None,
+                    end_ms: None,
+                    text,
+                    words: vec![],
+                })
+                .collect(),
+        });
+    }
+    let mut lines = Vec::with_capacity(timed.len());
+    for (index, (start_ms, text)) in timed.iter().enumerate() {
+        if text.trim().is_empty() {
+            continue;
+        }
+        lines.push(TimedLyricLine {
+            index,
+            start_ms: Some(*start_ms),
+            end_ms: timed.get(index + 1).map(|(next, _)| *next),
+            text: text.clone(),
+            words: vec![],
+        });
+    }
+    Some(ParsedLyric {
+        format: LyricFormat::Lrc,
+        offset_ms: lrc_offset(raw),
+        lines,
+    })
+}
+
+pub fn parse_timed_lrc(raw: &str) -> Vec<(u64, String)> {
+    let mut lines = Vec::new();
+    for raw_line in raw.lines() {
+        let mut remaining = raw_line.trim();
+        let mut timestamps = Vec::new();
+        while let Some(rest) = remaining.strip_prefix('[') {
+            let Some(close) = rest.find(']') else {
+                break;
+            };
+            let tag = &rest[..close];
+            if let Some(timestamp) = parse_lrc_timestamp(tag) {
+                timestamps.push(timestamp);
+            }
+            remaining = &rest[close + 1..];
+        }
+        let text = clean_text(remaining);
+        for timestamp in timestamps {
+            lines.push((timestamp, text.clone()));
+        }
+    }
+    lines.sort_by_key(|(timestamp, _)| *timestamp);
+    lines
+}
+
+fn parse_lrc_timestamp(value: &str) -> Option<u64> {
+    let parts = value.split(':').map(str::trim).collect::<Vec<_>>();
+    let (hours, minutes, seconds) = match parts.as_slice() {
+        [minutes, seconds] => (
+            0,
+            minutes.parse::<u64>().ok()?,
+            seconds.parse::<f64>().ok()?,
+        ),
+        [hours, minutes, seconds] => (
+            hours.parse::<u64>().ok()?,
+            minutes.parse::<u64>().ok()?,
+            seconds.parse::<f64>().ok()?,
+        ),
+        _ => return None,
+    };
+    if !seconds.is_finite()
+        || seconds < 0.0
+        || (parts.len() == 3 && minutes >= 60)
+        || seconds >= 60.0
+    {
+        return None;
+    }
+    Some(
+        hours
+            .saturating_mul(3_600_000)
+            .saturating_add(minutes.saturating_mul(60_000))
+            .saturating_add((seconds * 1_000.0).round() as u64),
+    )
+}
+
+fn lrc_offset(raw: &str) -> i64 {
+    raw.lines()
+        .find_map(|line| {
+            line.trim()
+                .strip_prefix("[offset:")?
+                .strip_suffix(']')?
+                .parse()
+                .ok()
+        })
+        .unwrap_or(0)
+}
+
+fn clean_text(value: &str) -> String {
+    let stripped = value
+        .replace("<em>", "")
+        .replace("</em>", "")
+        .replace("<br>", "\n")
+        .replace("<br/>", "\n")
+        .replace("<br />", "\n");
+    quick_xml::escape::unescape(stripped.trim())
+        .map(|value| value.into_owned())
+        .unwrap_or_else(|_| stripped.trim().to_owned())
+}

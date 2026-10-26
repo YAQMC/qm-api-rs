@@ -219,6 +219,51 @@ pub fn from_url(source: &str) -> Option<ArtworkSource> {
     })
 }
 
+// Account avatar protocol rules, shared by all library consumers.
+pub fn is_sanitized_avatar_url(value: &str) -> bool {
+    url::Url::parse(value).is_ok_and(|url| {
+        url.scheme() == "https"
+            && url.port_or_known_default() == Some(443)
+            && matches!(
+                url.host_str(),
+                Some("qpic.y.qq.com" | "q.qlogo.cn" | "thirdwx.qlogo.cn" | "thirdqq.qlogo.cn")
+            )
+            && url.username().is_empty()
+            && url.password().is_none()
+    })
+}
+
+pub fn normalize_avatar_url(value: &str) -> Option<String> {
+    let value = value.trim();
+    let mut url = if value.starts_with("//") {
+        url::Url::parse(&format!("https:{value}")).ok()?
+    } else {
+        url::Url::parse(value).ok()?
+    };
+    if url.scheme() == "http" {
+        if url.port_or_known_default() != Some(80)
+            || !matches!(
+                url.host_str(),
+                Some("qpic.y.qq.com" | "q.qlogo.cn" | "thirdwx.qlogo.cn" | "thirdqq.qlogo.cn")
+            )
+            || !url.username().is_empty()
+            || url.password().is_some()
+        {
+            return None;
+        }
+        url.set_scheme("https").ok()?;
+        url.set_port(None).ok()?;
+    }
+    let normalized = url.to_string();
+    is_sanitized_avatar_url(&normalized).then_some(normalized)
+}
+
+pub fn fallback_qq_avatar_url(uin: &str) -> Option<String> {
+    let plausible_qq =
+        (5..=12).contains(&uin.len()) && uin.bytes().all(|character| character.is_ascii_digit());
+    plausible_qq.then(|| format!("https://q.qlogo.cn/headimg_dl?dst_uin={uin}&spec=640"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

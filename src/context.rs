@@ -670,7 +670,27 @@ impl ApiContext {
         param: Value,
         opts: &RequestOptions,
     ) -> Result<CgiReply<Value>> {
-        self.limiter.acquire().await;
+        self.request_cgi_with_response_limit(module, method, param, opts, None)
+            .await
+    }
+
+    /// Bound decoded bytes while the transport reads chunks, before JSON parsing.
+    pub(crate) async fn request_cgi_with_response_limit(
+        &self,
+        module: &str,
+        method: &str,
+        param: Value,
+        opts: &RequestOptions,
+        max_response_bytes: Option<usize>,
+    ) -> Result<CgiReply<Value>> {
+        if opts.cancellation.is_cancelled() {
+            return Err(QmError::cancelled());
+        }
+        tokio::select! {
+            biased;
+            _ = opts.cancellation.cancelled() => return Err(QmError::cancelled()),
+            _ = self.limiter.acquire() => {},
+        }
 
         // 每个 CGI 请求只在入口读取一次全局账号. 后续 build_comm/session/Cookie 都绑定
         // 同一不可变凭证快照, 避免并发 set_credential 导致跨账号 TOCTOU.
@@ -709,8 +729,35 @@ impl ApiContext {
         request.retry = opts.retry;
         request.redirects = RedirectMode::FollowValidated;
         request.cancellation = opts.cancellation.clone();
-        let resp = self.execute_transport(request).await?;
+        request.max_response_bytes = max_response_bytes;
+        let resp = tokio::select! {
+            biased;
+            _ = opts.cancellation.cancelled() => return Err(QmError::cancelled()),
+            response = self.execute_transport(request) => response?,
+        };
+        // Injected transports must enforce the streaming bound themselves; also
+        // reject an over-limit result here before allocating the JSON tree.
+        if max_response_bytes.is_some_and(|limit| resp.body.len() > limit) {
+            return Err(QmError::Protocol {
+                stage: "response-limit",
+                message: "decoded response exceeds byte limit".into(),
+            });
+        }
+        if opts.cancellation.is_cancelled() {
+            return Err(QmError::cancelled());
+        }
         let status = resp.status;
+        if max_response_bytes.is_some() && status == 200 {
+            let parse = tokio::task::spawn_blocking(move || parse_cgi_envelope(&resp.text(), 0));
+            return tokio::select! {
+                biased;
+                _ = opts.cancellation.cancelled() => Err(QmError::cancelled()),
+                result = parse => result.map_err(|_| QmError::Protocol {
+                    stage: "cgi-parse",
+                    message: "response parser task failed".into(),
+                })?,
+            };
+        }
         let text = resp.text();
         if status != 200 {
             return Err(QmError::http(status, text));

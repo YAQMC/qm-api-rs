@@ -34,7 +34,8 @@ sha1 = "0.10"
 hmac = "0.12"
 md-5 = "0.10"
 rand = "0.8"
-uuid = { version = "1", features = ["v4"] }
+# Keep the Rust-1.85-compatible patch line for this crate's Rust 1.88 MSRV.
+uuid = { version = "~1.26.0", features = ["v4"] }
 base64 = "0.22"
 thiserror = "2"
 hex = "0.4"
@@ -43,6 +44,7 @@ aes = "0.8"
 cbc = { version = "0.1", features = ["alloc"] }
 cipher = "0.4"
 flate2 = "1"
+quick-xml = "0.41"
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 futures-util = "0.3"
 zeroize = "1"

@@ -6,6 +6,67 @@ use serde_json::Value;
 use super::base::{Album, Singer, SongList, MV};
 use crate::jsonpath_model;
 
+/// Current account profile decoded from the desktop base-info service.
+#[derive(Debug, Clone)]
+pub struct CurrentUserProfile {
+    pub nickname: String,
+    pub avatar_url: Option<String>,
+    pub encrypted_uin: Option<String>,
+}
+
+impl CurrentUserProfile {
+    pub(crate) fn parse(data: &serde_json::Value, uin: &str) -> crate::Result<Self> {
+        use serde_json::Value;
+        let profile = if let Some(map) = data.get("map_userinfo") {
+            map.get(uin).ok_or_else(|| {
+                crate::QmError::ApiData("profile account identity mismatch".into())
+            })?
+        } else {
+            data.get("userInfo")
+                .or_else(|| data.get("info"))
+                .unwrap_or(data)
+        };
+        let field = |value: &Value, names: &[&str]| {
+            names.iter().find_map(|name| {
+                let value = value.get(*name)?;
+                value
+                    .as_str()
+                    .map(ToOwned::to_owned)
+                    .or_else(|| value.as_u64().map(|v| v.to_string()))
+            })
+        };
+        let nickname = field(profile, &["nick", "nickname", "name", "Name", "NickName"])
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| crate::QmError::ApiData("profile nickname missing".into()))?;
+        let avatar_url = field(
+            profile,
+            &[
+                "headurl",
+                "headUrl",
+                "avatar",
+                "avatarUrl",
+                "Avatar",
+                "logo",
+                "ifpicurl",
+            ],
+        )
+        .as_deref()
+        .and_then(crate::artwork::normalize_avatar_url)
+        .or_else(|| crate::artwork::fallback_qq_avatar_url(uin));
+        let encrypted_uin = field(
+            profile,
+            &["encryptUin", "encrypt_uin", "euin", "EncryptUin"],
+        )
+        .or_else(|| field(data, &["encryptUin", "encrypt_uin", "euin", "EncryptUin"]))
+        .filter(|value| !value.trim().is_empty());
+        Ok(Self {
+            nickname,
+            avatar_url,
+            encrypted_uin,
+        })
+    }
+}
+
 /// 用户歌单列表中的单个歌单摘要.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
