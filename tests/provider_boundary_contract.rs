@@ -358,6 +358,23 @@ fn playback_qrc_xml_preserves_literal_and_escaped_line_breaks() {
 }
 
 #[test]
+fn playback_qrc_xml_tolerates_unescaped_quotes_and_ampersands_in_lyric_content() {
+    use qqmusic_api::lyric_parser::parse_playback_qrc;
+
+    let xml = r#"<QrcInfos>
+<LyricInfo LyricCount="1">
+<Lyric_1 LyricType="1" LyricContent="[ti:My Heart Will Go On (Love Theme from "Titanic") & More]
+[0,1000]Every(0,300) night(300,300) I(600,200) see(800,200)
+[1000,1000]You(1000,1000)" />
+</LyricInfo>
+</QrcInfos>"#;
+    let parsed = parse_playback_qrc(xml).expect("QQ Music-style QRC parses");
+    assert_eq!(parsed.lines.len(), 2);
+    assert_eq!(parsed.lines[0].text, "Every night I see");
+    assert_eq!(parsed.lines[1].text, "You");
+}
+
+#[test]
 fn playback_lrc_accepts_accumulated_minutes_and_checks_hour_fields() {
     use qqmusic_api::lyric_parser::{ms_to_lrc_time, parse_playback_lrc, parse_timed_lrc};
     let raw = format!("[59:59.00]before\n[{}]after", ms_to_lrc_time(3_600_000));

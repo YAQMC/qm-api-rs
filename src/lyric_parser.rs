@@ -432,6 +432,15 @@ fn extract_qrc_content(raw: &str) -> Option<String> {
     if !raw.trim_start().starts_with('<') {
         return None;
     }
+    // QQ Music currently emits LyricContent as XML-like text but does not
+    // escape quotes or ampersands inside song titles. The first unescaped
+    // quote would otherwise terminate quick-xml's attribute before the timed
+    // lyric payload is reached. Recover the complete attribute using the tag
+    // delimiter, then normalize only invalid bare ampersands for entity
+    // decoding.
+    if let Some(content) = extract_tolerant_lyric_content(raw) {
+        return Some(content);
+    }
     let mut reader = quick_xml::Reader::from_str(raw);
     reader.config_mut().trim_text(false);
     loop {
@@ -443,15 +452,85 @@ fn extract_qrc_content(raw: &str) -> Option<String> {
                         // QRC payloads can contain literal line breaks in an XML
                         // attribute. Decode/unescape without normalizing them to spaces.
                         let decoded = reader.decoder().decode(&attribute.value).ok()?;
-                        return quick_xml::escape::unescape(&decoded)
-                            .ok()
-                            .map(|value| value.into_owned());
+                        return Some(decode_qrc_attribute(&decoded));
                     }
                 }
             }
             Ok(quick_xml::events::Event::Eof) | Err(_) => return None,
             _ => {}
         }
+    }
+}
+
+fn extract_tolerant_lyric_content(raw: &str) -> Option<String> {
+    const ATTRIBUTE: &str = "LyricContent";
+
+    let name_start = raw.find(ATTRIBUTE)?;
+    let after_name = &raw[name_start + ATTRIBUTE.len()..];
+    let equals = after_name.find('=')?;
+    if !after_name[..equals].trim().is_empty() {
+        return None;
+    }
+    let after_equals = after_name[equals + 1..].trim_start();
+    let quote = after_equals.chars().next()?;
+    if quote != '"' && quote != '\'' {
+        return None;
+    }
+    let content_and_rest = &after_equals[quote.len_utf8()..];
+    let mut closing = None;
+    for (index, character) in content_and_rest.char_indices() {
+        if character == quote && lyric_tag_closes(&content_and_rest[index + 1..]) {
+            closing = Some(index);
+        }
+    }
+    let closing = closing?;
+    Some(decode_qrc_attribute(&content_and_rest[..closing]))
+}
+
+fn lyric_tag_closes(after_quote: &str) -> bool {
+    let suffix = after_quote.trim_start();
+    suffix.starts_with("/>") || suffix.starts_with('>')
+}
+
+fn decode_qrc_attribute(value: &str) -> String {
+    let mut normalized = String::with_capacity(value.len());
+    let mut rest = value;
+    while let Some(index) = rest.find('&') {
+        normalized.push_str(&rest[..index]);
+        let candidate = &rest[index..];
+        if xml_entity_at(candidate) {
+            normalized.push('&');
+            rest = &rest[index + 1..];
+        } else {
+            normalized.push_str("&amp;");
+            rest = &rest[index + 1..];
+        }
+    }
+    normalized.push_str(rest);
+    quick_xml::escape::unescape(&normalized)
+        .map(|decoded| decoded.into_owned())
+        .unwrap_or(normalized)
+}
+
+fn xml_entity_at(value: &str) -> bool {
+    const NAMED: [&str; 5] = ["&amp;", "&lt;", "&gt;", "&quot;", "&apos;"];
+    if NAMED.iter().any(|entity| value.starts_with(entity)) {
+        return true;
+    }
+    let Some(reference) = value.strip_prefix("&#") else {
+        return false;
+    };
+    let Some(end) = reference.find(';') else {
+        return false;
+    };
+    let digits = &reference[..end];
+    if let Some(hex) = digits
+        .strip_prefix('x')
+        .or_else(|| digits.strip_prefix('X'))
+    {
+        !hex.is_empty() && hex.chars().all(|character| character.is_ascii_hexdigit())
+    } else {
+        !digits.is_empty() && digits.chars().all(|character| character.is_ascii_digit())
     }
 }
 
