@@ -27,6 +27,37 @@
 | `client.recommend.get_web_newsongs` | kind（上游新歌类型） | 公共新歌列表 |
 | `client.search.search_songlists` | keyword、num、page（从 1 开始） | Android 歌单搜索分页，兼容数字/字符串字段 |
 
+### 同账号跨平台当前播放
+
+```rust
+let snapshot = client
+    .device_playback
+    .get_other_platform_current_playlist_for(&credential)
+    .await?;
+```
+
+也可调用 `get_other_platform_current_playlist()` 使用客户端当前凭证，或调用
+`get_other_platform_current_playlist_with_cancellation(credential, cancellation)` 取消请求。
+该接口只读取 `music.richFlag.listening / GetOtherPlatCurrentPlaylist`，需要登录，使用安全读重试
+类别并限制响应大小；它不执行接管或播放控制。
+
+`OtherPlatformCurrentPlaylist` 暴露响应中的 `ct`、`cv`、秒单位的 `update_timestamp_sec`、
+`play_list`、`listening_song_id`、`text` 和秒单位的 `keep_sec`。可用
+`display_text()` 解码已观察到的 `text` 内层 JSON（`txt`、`songName`）。该响应本身不含
+精确播放位置或播放模式；`play_list` 是上游当前快照中的歌曲 ID 列表，不是完整播放队列状态。
+
+播放器适配器在明确发生播放/暂停/进度更新时，如决定发布当前状态，可显式调用
+`report_listening_music(&ListeningMusicReportRequest, &Credential, cancellation)`。这是有副作用的状态写入，
+不会由快照读取自动触发，也设置为不自动重试。`remaining_time_ms` 与 `song_play_time_ms` 按观察到的
+移动端契约分别表示剩余时长和曲目总时长（毫秒）；当前进度须由调用方计算，避免误把剩余时长当作位置。
+该上报不是专用接管命令，且是否会触发其他设备暂停仍应由宿主用测试会话核验。
+
+> **互操作边界：** Android 20.7.0.8 静态调用链与受控运行日志确认了上述 module/method 及
+> `u6.y.qq.com/cgi-bin/musics.fcg` 路径；本实现通过现有签名 CGI transport 发出请求。
+> 该版本日志 URL 还包含不透明的 `cgiKey` 查询参数。它的生成/含义尚未复现，因此此库接口
+> 尚未宣称与移动端请求逐字节等价，也没有执行 live 接口验证。状态上报是显式写入接口；
+> 本模块未提供专用“接管”命令，也未验证上报会使其他设备暂停。
+
 个性化 Web Feed 必须显式提供凭据，不修改或继承 Client 的默认账户。上述公共 Web 方法
 显式使用匿名身份，即使 Client 默认平台为 Android 或已经登录也不带入该账户。
 CGI 的空 Cookie header 是隔离信号，自定义 transport 不得移除它再从 Cookie jar 补登录信息。
