@@ -2,6 +2,7 @@
 
 pub mod album;
 pub mod comment;
+pub mod device_playback;
 pub mod discovery;
 pub mod helper;
 pub mod helper_utils;
@@ -20,6 +21,7 @@ pub mod user;
 
 pub use album::AlbumApi;
 pub use comment::CommentApi;
+pub use device_playback::DevicePlaybackApi;
 pub use discovery::DiscoveryApi;
 pub use helper::HelperApi;
 pub use helper_utils::UploadFileSession;

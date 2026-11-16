@@ -36,6 +36,7 @@
 //! - `Client::comment` —— 评论
 //! - `Client::recommend` —— 推荐
 //! - `Client::discovery` —— Web 分类、播客、新 MV、焦点卡和区域页
+//! - `Client::device_playback` —— 同账号其他平台的当前播放快照 (只读)
 //! - `Client::user` —— 用户
 //! - `Client::login` —— 登录 (QQ/微信二维码, 手机验证码)
 //! - `Client::helper` —— 上传等辅助接口

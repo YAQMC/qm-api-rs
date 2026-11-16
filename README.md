@@ -11,7 +11,7 @@
 
 ## 特性
 
-- 🎵 涵盖常见 API：歌曲 / 搜索 / 歌手 / 专辑 / 歌词 / MV / 排行榜 / 歌单 / 评论 / 推荐 / 用户 / 登录 / 私信 / 上传辅助
+- 🎵 涵盖常见 API：歌曲 / 搜索 / 歌手 / 专辑 / 歌词 / MV / 排行榜 / 歌单 / 评论 / 推荐 / 用户 / 登录 / 私信 / 跨端播放快照 / 上传辅助
 - 🚀 调用简便，函数命名易懂，方法均带详细文档
 - ⚡ 完全异步（`tokio` + 可注入 `ApiTransport`，默认 reqwest 0.12）
 - 🔐 内置签名算法（`zzc_sign`）与 QRC 歌词 3DES 解密
@@ -78,6 +78,7 @@ cargo run --example demo
 | `client.mv` | MV | `get_detail`, `get_mv_urls`, `get_mv_list` |
 | `client.top` | 排行榜 | `get_category`, `get_detail`, `get_web_detail` |
 | `client.discovery` | Web 发现 | `categories`, `podcasts`, `new_mvs`, `featured`, `area` |
+| `client.device_playback` | 跨端播放 | `get_other_platform_current_playlist` (只读当前播放快照) |
 | `client.songlist` | 歌单 | `get_detail`, `create`, `delete`, `add_songs`, `like_song` 等 |
 | `client.comment` | 评论 | `get_hot_comments`, `get_new_comments`, `add_comment` 等 |
 | `client.recommend` | 推荐 | `get_web_home_feed`, `get_web_songlists`, `get_web_newsongs`；原有 Home / Guess / Radar / Daily 接口保持兼容 |

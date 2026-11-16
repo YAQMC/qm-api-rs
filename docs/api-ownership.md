@@ -6,6 +6,8 @@ QQ 的 endpoint、module/method、业务类型、请求字段、响应别名、�
 | --- | --- |
 | 歌曲热门、最新与回复 | `client.comment.get_song_comments(&SongCommentsRequest)` |
 | 当前账号资料 | `client.user.get_current_profile(&Credential, CancellationToken)` |
+| 其他平台当前播放快照（只读） | `client.device_playback.get_other_platform_current_playlist_for(&Credential)` |
+| 当前账号播放状态上报（显式副作用、禁自动重试） | `client.device_playback.report_listening_music(&ListeningMusicReportRequest, &Credential, CancellationToken)` |
 | 歌单与收藏写入回执 | `account::write_checked`、`WriteOutcome` |
 | 账号歌单元数据别名 | `account::AccountPlaylistMetadata`、`OwnedPlaylistEditFields` |
 | 播放候选文件名及 vkey 响应 | `playback::PlaybackFile`、`resolve_files` |
