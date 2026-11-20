@@ -207,7 +207,10 @@ pub struct MvSearch {
     pub duration: i64,
     #[serde(alias = "publish_date")]
     pub publish_date: String,
-    #[serde(alias = "singerid")]
+    #[serde(
+        alias = "singerid",
+        deserialize_with = "crate::models::de::int_or_string"
+    )]
     pub singer_id: i64,
     #[serde(alias = "singermid")]
     pub singer_mid: String,
@@ -372,4 +375,40 @@ pub struct CompleteResponse {
     pub history_items: Vec<Value>,
     pub vec_direct_items: Vec<Value>,
     pub vec_related_items: Vec<Value>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mv_search_accepts_string_identifiers() {
+        let response: SearchByTypeResponse = serde_json::from_value(serde_json::json!({
+            "meta": {
+                "searchid": "fixture",
+                "perpage": 5,
+                "nextpage": 2,
+                "sum": 1
+            },
+            "body": {
+                "item_mv": [{
+                    "id": "57370",
+                    "vid": "fixture-vid",
+                    "mvname": "Fixture MV",
+                    "pic": "https://example.invalid/mv.jpg",
+                    "duration": 240,
+                    "publish_date": "2026-11-20",
+                    "singerid": "6452",
+                    "singermid": "fixture-singer",
+                    "singername": "Fixture Artist"
+                }]
+            }
+        }))
+        .expect("MV search response should deserialize");
+
+        assert_eq!(response.mv.len(), 1);
+        assert_eq!(response.mv[0].base.id, 57370);
+        assert_eq!(response.mv[0].singer_id, 6452);
+        assert_eq!(response.mv[0].singer_name, "Fixture Artist");
+    }
 }

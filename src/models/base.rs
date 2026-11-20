@@ -126,7 +126,12 @@ pub struct Pay {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct MV {
-    #[serde(alias = "sid", alias = "mvid", alias = "singerId")]
+    #[serde(
+        alias = "sid",
+        alias = "mvid",
+        alias = "singerId",
+        deserialize_with = "crate::models::de::int_or_string"
+    )]
     pub id: i64,
     pub vid: String,
     #[serde(alias = "vt")]

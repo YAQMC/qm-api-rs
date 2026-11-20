@@ -137,4 +137,26 @@ pub mod de {
             other => Ok(other.as_str().unwrap_or("").to_string()),
         }
     }
+
+    /// Deserialize an identifier supplied as either a JSON number or decimal string.
+    pub fn int_or_string<'de, D>(de: D) -> Result<i64, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = Value::deserialize(de)?;
+        match value {
+            Value::Null => Ok(0),
+            Value::Number(number) => number
+                .as_i64()
+                .or_else(|| number.as_u64().and_then(|value| i64::try_from(value).ok()))
+                .ok_or_else(|| serde::de::Error::custom("integer identifier is out of range")),
+            Value::String(text) => text
+                .trim()
+                .parse::<i64>()
+                .map_err(|_| serde::de::Error::custom("invalid string integer identifier")),
+            _ => Err(serde::de::Error::custom(
+                "identifier must be a JSON number or decimal string",
+            )),
+        }
+    }
 }
