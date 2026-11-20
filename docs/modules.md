@@ -335,7 +335,8 @@ lyric.get_ai_dict(songid) -> GetAIDictResponse
 
 ```rust
 mv.get_detail(&[vid]) -> GetMvDetailResponse
-mv.get_mv_urls(&[vid]) -> GetMvUrlsResponse
+mv.get_mv_urls(&[vid]) -> GetMvUrlsResponse  // 默认 H.264 (264)
+mv.get_mv_urls_with_format(&[vid], 264 | 265) -> GetMvUrlsResponse
 mv.get_mv_list(area, version, order, num, page) -> GetMvListResponse
 ```
 
