@@ -112,10 +112,14 @@ pub struct NewMvCard {
 impl<'de> Deserialize<'de> for NewMvCard {
     fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
         let raw = Value::deserialize(de)?;
-        let id = raw["mvid"]
-            .as_u64()
-            .filter(|id| *id > 0)
-            .ok_or_else(|| serde::de::Error::custom("MV requires a positive identifier"))?;
+        // `mvid` is the numeric catalogue identifier, while playback endpoints
+        // require the string `vid`. Keep the playable identifier in `id` so a
+        // discovered card can be opened without a second lookup or remapping.
+        let id = raw["vid"]
+            .as_str()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| serde::de::Error::custom("MV requires a playback video identifier"))?;
         let title = raw["title"]
             .as_str()
             .ok_or_else(|| serde::de::Error::custom("MV requires a text title"))?;
@@ -126,7 +130,7 @@ impl<'de> Deserialize<'de> for NewMvCard {
                 .ok_or_else(|| serde::de::Error::custom("invalid MV duration"))?,
         };
         Ok(Self {
-            id: id.to_string(),
+            id: id.to_owned(),
             title: title.to_owned(),
             cover_url: card_cover(&raw),
             duration_seconds,

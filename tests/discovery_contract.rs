@@ -103,11 +103,11 @@ async fn discovery_requests_use_exact_contracts_and_typed_cards() {
         "MvService.MvInfoProServer",
         "GetNewMv",
         json!({"style":0,"tag":0,"start":8,"size":8}),
-        json!({"list":[{"mvid":1001,"title":"MV","duration":180,"singers":[{"name":"Artist"}]}]}),
+        json!({"list":[{"mvid":1001,"vid":"fixture-vid","title":"MV","duration":180,"singers":[{"name":"Artist"}]}]}),
         0,
     );
     let mvs = api.discovery.new_mvs(8, 8).await.unwrap();
-    assert_eq!(mvs[0].id, "1001");
+    assert_eq!(mvs[0].id, "fixture-vid");
     assert_eq!(mvs[0].artist, "Artist");
     assert_eq!(mvs[0].duration_seconds, 180);
 
@@ -245,7 +245,9 @@ async fn malformed_discovery_rows_cannot_erase_a_section() {
     for bad_mv in [
         json!(false),
         json!({"mvid":0}),
-        json!({"mvid":1,"title":"MV","duration":-1}),
+        json!({"mvid":1,"title":"MV","duration":180}),
+        json!({"mvid":1,"vid":"","title":"MV","duration":180}),
+        json!({"mvid":1,"vid":"fixture-vid","title":"MV","duration":-1}),
     ] {
         let (api, _) = client(
             "MvService.MvInfoProServer",
