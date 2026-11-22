@@ -28,7 +28,7 @@ pub fn qrc_decrypt(encrypted: &str) -> Option<String> {
 
     let schedule = tripledes_key_setup(QRC_3DES_KEY, DECRYPT);
     let mut out = Vec::with_capacity(bytes.len());
-    for chunk in bytes.chunks_exact(8) {
+    for chunk in bytes.as_chunks::<8>().0 {
         out.extend_from_slice(&tripledes_crypt(chunk, &schedule));
     }
 

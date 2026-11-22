@@ -532,7 +532,7 @@ mod tests {
         let mut previous_plain = [0_u8; 8];
         let mut previous_cipher = [0_u8; 8];
         let mut output = Vec::with_capacity(plain.len());
-        for chunk in plain.chunks_exact(8) {
+        for chunk in plain.as_chunks::<8>().0 {
             let mut mixed = [0_u8; 8];
             for index in 0..8 {
                 mixed[index] = chunk[index] ^ previous_cipher[index];
