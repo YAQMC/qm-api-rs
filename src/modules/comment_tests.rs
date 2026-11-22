@@ -20,7 +20,7 @@ impl ApiTransport for Fixture {
             panic!("expected JSON CGI request");
         };
         assert_eq!(
-            payload["comm"]["uin"], 0,
+            payload["comm"]["uin"], "0",
             "public read inherited login state"
         );
         self.calls.lock().unwrap().push(payload);

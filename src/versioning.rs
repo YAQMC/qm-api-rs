@@ -1,6 +1,7 @@
 //! 请求平台版本策略 (对应 Python 端 `core/versioning.py`).
 
-use serde_json::{json, Value};
+use serde_json::{Map, Value};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::models::Credential;
 use crate::utils::hash33;
@@ -80,66 +81,88 @@ impl VersionPolicy {
         session: Option<&crate::context::AndroidSession>,
     ) -> Value {
         let profile = self.get_profile(platform);
+        let mut comm = Map::new();
+        let mut insert = |key: &str, value: String| {
+            comm.insert(key.to_string(), Value::String(value));
+        };
+
         match platform {
             Platform::Android => {
-                let (q16, q36) = qimei
-                    .map(|q| (q.0.clone(), q.1.clone()))
-                    .unwrap_or_default();
                 let guid = device.open_udid.clone();
-                let (uid, sid) = session
-                    .map(|s| (s.uid.clone(), s.sid.clone()))
-                    .unwrap_or_default();
-                json!({
-                    "ct": profile.ct,
-                    "cv": profile.cv,
-                    "v": profile.v.unwrap_or(profile.cv),
-                    "chid": "10003505",
-                    "qq": credential.musicid.to_string(),
-                    "authst": credential.musickey,
-                    "tmeAppID": "qqmusic",
-                    "tmeLoginType": credential.login_type,
-                    "QIMEI": q16,
-                    "QIMEI36": q36,
-                    "OpenUDID": guid,
-                    "udid": guid,
-                    "uid": uid,
-                    "OpenUDID2": guid,
-                    "sid": sid,
-                    "aid": device.android_id.clone(),
-                    "os_ver": device.version.release.clone(),
-                    "phonetype": device.model.clone(),
-                    "devicelevel": device.version.sdk.to_string(),
-                    "newdevicelevel": device.version.sdk.to_string(),
-                    "rom": device.fingerprint.clone(),
-                })
+                let uid_part = if credential.musicid != 0 {
+                    credential.musicid.to_string()
+                } else {
+                    guid.clone()
+                };
+                let trace_timestamp = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+
+                insert("ct", profile.ct.to_string());
+                insert("cv", profile.cv.to_string());
+                insert("v", profile.v.unwrap_or(profile.cv).to_string());
+                insert("chid", "10003505".into());
+                if credential.musicid != 0 {
+                    insert("qq", credential.musicid.to_string());
+                }
+                if !credential.musickey.is_empty() {
+                    insert("authst", credential.musickey.clone());
+                }
+                insert("tmeAppID", "qqmusic".into());
+                if credential.login_type != 0 {
+                    insert("tmeLoginType", credential.login_type.to_string());
+                }
+                insert("traceid", format!("10002_{uid_part}_{trace_timestamp}"));
+                insert(
+                    "QIMEI36",
+                    qimei.map(|value| value.1.clone()).unwrap_or_default(),
+                );
+                insert("OpenUDID", guid.clone());
+                insert("udid", guid);
+                if let Some(session) = session {
+                    insert("uid", session.uid.clone());
+                }
+                insert("OpenUDID2", device.open_udid2.clone());
+                if let Some(session) = session {
+                    insert("sid", session.sid.clone());
+                }
+                insert("aid", device.android_id.clone());
+                insert("os_ver", device.version.release.clone());
+                insert("phonetype", xml_escape_attr(&device.model));
             }
-            Platform::Desktop => json!({
-                "ct": profile.ct,
-                "cv": profile.cv,
-                "platform": profile.platform,
-                "chid": "0",
-                "uin": credential.musicid,
-                "g_tk": Self::get_g_tk(credential),
-                "guid": device.open_udid.to_uppercase(),
-            }),
+            Platform::Desktop => {
+                insert("ct", profile.ct.to_string());
+                insert("cv", profile.cv.to_string());
+                if let Some(value) = profile.platform.as_ref() {
+                    insert("platform", value.clone());
+                }
+                insert("chid", "0".into());
+                if credential.musicid != 0 {
+                    insert("uin", credential.musicid.to_string());
+                }
+                insert("g_tk", Self::get_g_tk(credential).to_string());
+                insert("guid", device.open_udid.to_uppercase());
+            }
             Platform::Web => {
                 let g_tk = Self::get_g_tk(credential);
-                json!({
-                    "ct": profile.ct,
-                    "cv": profile.cv,
-                    "platform": profile.platform,
-                    "chid": "0",
-                    "uin": credential.musicid,
-                    "g_tk": g_tk,
-                    "g_tk_new_20200303": g_tk,
-                    "format": "json",
-                    "inCharset": "utf-8",
-                    "outCharset": "utf-8",
-                    "notice": 0,
-                    "need_new_code": 1,
-                })
+                insert("ct", profile.ct.to_string());
+                insert("cv", profile.cv.to_string());
+                if let Some(value) = profile.platform.as_ref() {
+                    insert("platform", value.clone());
+                }
+                insert("chid", "0".into());
+                insert("uin", credential.musicid.to_string());
+                insert("g_tk", g_tk.to_string());
+                insert("g_tk_new_20200303", g_tk.to_string());
+                insert("format", "json".into());
+                insert("inCharset", "utf-8".into());
+                insert("outCharset", "utf-8".into());
+                insert("notice", "0".into());
+                insert("need_new_code", "1".into());
             }
         }
+        Value::Object(comm)
     }
 
     /// 根据平台生成 User-Agent.
@@ -168,10 +191,10 @@ impl VersionPolicy {
 
 impl Default for VersionPolicy {
     fn default() -> Self {
-        let mut android = VersionProfile::new(11, 14_090_008);
-        android.v = Some(14_090_008);
-        android.ua_version = Some(14_090_008);
-        android.qimei_app_version = Some("14.9.0.8".into());
+        let mut android = VersionProfile::new(11, 20_090_008);
+        android.v = Some(20_090_008);
+        android.ua_version = Some(20_090_008);
+        android.qimei_app_version = Some("20.9.0.8".into());
         android.qimei_sdk_version = Some("1.2.13.6".into());
 
         let mut desktop = VersionProfile::new(19, 2201);
@@ -185,5 +208,85 @@ impl Default for VersionPolicy {
             desktop,
             web,
         }
+    }
+}
+
+fn xml_escape_attr(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '"' => escaped.push_str("&quot;"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn device() -> crate::Device {
+        let mut device = crate::Device::random();
+        device.open_udid = "primary-udid".into();
+        device.open_udid2 = "secondary-udid".into();
+        device.android_id = "android-id".into();
+        device.model = "A\"&B".into();
+        device
+    }
+
+    #[test]
+    fn android_comm_matches_current_protocol_and_trace_identity() {
+        let policy = VersionPolicy::default();
+        let credential = Credential {
+            musicid: 42,
+            musickey: "key".into(),
+            login_type: 1,
+            ..Default::default()
+        };
+        let qimei = ("ignored-q16".into(), "q36".into());
+        let comm = policy.build_comm(
+            Platform::Android,
+            &credential,
+            &device(),
+            Some(&qimei),
+            None,
+        );
+
+        assert_eq!(comm["ct"], "11");
+        assert_eq!(comm["cv"], "20090008");
+        assert_eq!(comm["v"], "20090008");
+        assert_eq!(comm["QIMEI36"], "q36");
+        assert!(comm.get("QIMEI").is_none());
+        assert_eq!(comm["OpenUDID"], "primary-udid");
+        assert_eq!(comm["OpenUDID2"], "secondary-udid");
+        assert_eq!(comm["phonetype"], "A&quot;&amp;B");
+        assert!(comm["traceid"].as_str().unwrap().starts_with("10002_42_"));
+        assert!(comm["traceid"]
+            .as_str()
+            .unwrap()
+            .rsplit_once('_')
+            .and_then(|(_, timestamp)| timestamp.parse::<u64>().ok())
+            .is_some());
+    }
+
+    #[test]
+    fn guest_trace_uses_open_udid() {
+        let comm = VersionPolicy::default().build_comm(
+            Platform::Android,
+            &Credential::default(),
+            &device(),
+            None,
+            None,
+        );
+        assert!(comm["traceid"]
+            .as_str()
+            .unwrap()
+            .starts_with("10002_primary-udid_"));
+        assert!(comm.get("qq").is_none());
+        assert!(comm.get("authst").is_none());
     }
 }

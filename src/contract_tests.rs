@@ -116,15 +116,18 @@ fn login_cred() -> Credential {
 }
 
 fn android_comm_ok(comm: &Value) -> bool {
-    comm.get("QIMEI")
+    comm.get("QIMEI36")
         .and_then(Value::as_str)
         .is_some_and(|s| !s.is_empty())
-        && comm.get("ct").and_then(Value::as_i64).is_some()
-        && comm.get("uid").and_then(Value::as_str).is_some()
+        && comm.get("ct").and_then(Value::as_str) == Some("11")
+        && comm
+            .get("traceid")
+            .and_then(Value::as_str)
+            .is_some_and(|s| s.starts_with("10002_"))
 }
 
 fn web_comm_ok(comm: &Value) -> bool {
-    comm.get("ct").and_then(Value::as_i64).is_some()
+    comm.get("ct").and_then(Value::as_str).is_some()
 }
 
 #[tokio::test]

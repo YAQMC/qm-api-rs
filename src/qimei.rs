@@ -1,6 +1,6 @@
 //! QIMEI 获取与加密 (对应 Python 端 `utils/qimei.py`).
 //!
-//! Android 平台的 `comm` 参数需要携带 `QIMEI` / `QIMEI36` 指纹, 通过
+//! Android 平台的 `comm` 参数需要携带 `QIMEI36` 指纹, 通过
 //! `api.tencentmusic.com` 的 tRPC 代理申请. 请求负载使用 RSA (PKCS1v15)
 //! 与 AES-128-CBC 加密.
 
@@ -22,6 +22,8 @@ const SECRET: &str = "ZdJqM15EeO2zWc08";
 const APP_KEY: &str = "0AND0HD6FE4HY80F";
 const CHANNEL_ID: &str = "10003505";
 const PACKAGE_ID: &str = "com.tencent.qqmusic";
+const DEVICE_TOKEN_KEY: &[u8] = b"lvcwmSYVr2Axv1gn";
+const DEVICE_TOKEN_IV: &[u8] = b"Zs0ntDqG2jyhKN0c";
 
 type QimeiHttpRequest = (i64, Vec<(String, String)>, Value);
 
@@ -39,11 +41,49 @@ pub fn rsa_encrypt(content: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>
     Ok(key.encrypt(&mut rng, Pkcs1v15Encrypt, content)?)
 }
 
+/// AES-128-CBC 加密 (PKCS7 填充).
+pub fn aes_encrypt_with_iv(
+    key: &[u8],
+    iv: &[u8],
+    content: &[u8],
+) -> Result<Vec<u8>, cbc::cipher::InvalidLength> {
+    use cbc::cipher::{block_padding::Pkcs7, BlockEncryptMut, KeyIvInit};
+    let cipher = cbc::Encryptor::<aes::Aes128>::new_from_slices(key, iv)?;
+    Ok(cipher.encrypt_padded_vec_mut::<Pkcs7>(content))
+}
+
 /// AES-128-CBC 加密 (key 与 IV 相同, PKCS7 填充).
 pub fn aes_encrypt(key: &[u8], content: &[u8]) -> Result<Vec<u8>, cbc::cipher::InvalidLength> {
-    use cbc::cipher::{block_padding::Pkcs7, BlockEncryptMut, KeyIvInit};
-    let cipher = cbc::Encryptor::<aes::Aes128>::new_from_slices(key, key)?;
-    Ok(cipher.encrypt_padded_vec_mut::<Pkcs7>(content))
+    aes_encrypt_with_iv(key, key, content)
+}
+
+/// 根据 Android ID 计算 QIMEI 设备安全字段 `oz`.
+pub fn calc_device_oz(android_id: &str) -> QmResult<String> {
+    let encrypted = aes_encrypt_with_iv(DEVICE_TOKEN_KEY, DEVICE_TOKEN_IV, android_id.as_bytes())
+        .map_err(|error| {
+        QmError::Other(format!("QIMEI device oz encryption failed: {error}"))
+    })?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(encrypted))
+}
+
+/// 根据设备型号计算 QIMEI 设备安全字段 `oo`.
+pub fn calc_device_oo(model: &str) -> QmResult<String> {
+    let encrypted = aes_encrypt_with_iv(DEVICE_TOKEN_KEY, DEVICE_TOKEN_IV, model.as_bytes())
+        .map_err(|error| QmError::Other(format!("QIMEI device oo encryption failed: {error}")))?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(encrypted))
+}
+
+/// 根据 Android ID 生成稳定且属于私网的 IPv4 地址.
+pub fn private_ip_for_device(android_id: &str) -> String {
+    let digest = calc_md5(&[android_id.as_bytes()]);
+    let bytes = (0..digest.len())
+        .step_by(2)
+        .filter_map(|index| u8::from_str_radix(&digest[index..index + 2], 16).ok())
+        .collect::<Vec<_>>();
+    if bytes.len() < 2 {
+        return "192.168.0.2".into();
+    }
+    format!("192.168.{}.{}", bytes[0], bytes[1] % 253 + 2)
 }
 
 /// 将 Unix 秒转换为 UTC 的 (年, 月, 日, 时, 分, 秒).
@@ -113,28 +153,40 @@ fn rand_hex_from(range: std::ops::Range<u8>, n: usize) -> String {
 }
 
 /// 根据设备信息随机生成 QIMEI 请求负载.
-pub fn random_payload_by_device(device: &Device, version: &str, sdk_version: &str) -> Value {
+///
+/// 安全字段必须和使用它的 Android ID、型号及生产信息保持一致。若这些字段
+/// 彼此矛盾，服务端会将请求视为不同设备，进而降低游客/登录会话的稳定性。
+pub fn random_payload_by_device(
+    device: &Device,
+    version: &str,
+    sdk_version: &str,
+) -> QmResult<Value> {
     let mut rng = rand::thread_rng();
     let fixed_rand: i64 = rng.gen_range(0..14400);
     let (y, m, d, h, mi, s) = utc_from_secs(now_secs() - fixed_rand);
     let reserved = json!({
-        "harmony": "0",
+        "harmony": if device.vendor_os_name.to_ascii_lowercase().starts_with("harmonyos") { "1" } else { "0" },
         "clone": "0",
         "containe": "",
-        "oz": "UhYmelwouA+V2nPWbOvLTgN2/m8jwGB+yUB5v9tysQg=",
-        "oo": "Xecjt+9S1+f8Pz2VLSxgpw==",
+        "oz": calc_device_oz(&device.android_id)?,
+        "oo": calc_device_oo(&device.model)?,
         "kelong": "0",
+        "ip": private_ip_for_device(&device.android_id),
         "uptimes": format!("{y}-{m:02}-{d:02} {h:02}:{mi:02}:{s:02}"),
         "multiUser": "0",
-        "bod": device.brand,
+        "bod": device.board,
+        "brd": device.brand,
         "dv": device.device,
-        "firstLevel": "",
-        "manufact": device.brand,
-        "name": device.model,
-        "host": "se.infra",
+        "firstLevel": device.first_api_level.to_string(),
+        "manufact": if device.manufacturer.is_empty() { device.brand.clone() } else { device.manufacturer.clone() },
+        "name": device.product,
+        "host": device.host,
         "kernel": device.proc_version,
+        "pre": "0",
+        "av": version,
+        "ch": "",
     });
-    json!({
+    Ok(json!({
         "androidId": device.android_id,
         "platformId": 1,
         "appKey": APP_KEY,
@@ -147,20 +199,20 @@ pub fn random_payload_by_device(device: &Device, version: &str, sdk_version: &st
         "imsi": "",
         "mac": "",
         "model": device.model,
-        "networkType": "unknown",
+        "networkType": "wifi",
         "oaid": "",
         "osVersion": format!("Android {},level {}", device.version.release, device.version.sdk),
         "qimei": "",
         "qimei36": "",
         "sdkVersion": sdk_version,
-        "targetSdkVersion": "33",
+        "targetSdkVersion": "30",
         "audit": "",
         "userId": "{}",
         "packageId": PACKAGE_ID,
         "deviceType": "Phone",
         "sdkName": "",
         "reserved": reserved.to_string(),
-    })
+    }))
 }
 
 /// 构建 QIMEI 请求头和请求体.
@@ -169,7 +221,7 @@ pub fn build_qimei_request(
     version: &str,
     sdk_version: &str,
 ) -> QmResult<QimeiHttpRequest> {
-    let payload = random_payload_by_device(device, version, sdk_version);
+    let payload = random_payload_by_device(device, version, sdk_version)?;
     let crypt_key = rand_hex(16);
     let nonce = rand_hex(16);
     let ts = now_secs();
@@ -244,13 +296,38 @@ mod tests {
     #[test]
     fn build_qimei_request_propagates_crypto_as_result() {
         let device = Device::random();
-        let (ts, headers, body) = build_qimei_request(&device, "14.9.0.8", "1.2.13.6")
+        let (ts, headers, body) = build_qimei_request(&device, "20.9.0.8", "1.2.13.6")
             .expect("crypto should succeed for a random 16-byte AES key");
         assert!(ts > 0);
         assert!(headers.iter().any(|(k, _)| k == "sign"));
         assert!(body.get("qimeiParams").is_some());
         assert!(body["qimeiParams"]["key"].as_str().unwrap().len() > 8);
         assert!(body["qimeiParams"]["params"].as_str().unwrap().len() > 8);
+    }
+
+    #[test]
+    fn device_fields_are_consistent_and_stable() {
+        let device = Device::with_profile(crate::DeviceProfile::Xiaomi, Some(7));
+        let first = random_payload_by_device(&device, "20.9.0.8", "1.2.13.6").unwrap();
+        let second = random_payload_by_device(&device, "20.9.0.8", "1.2.13.6").unwrap();
+        let first_reserved: Value =
+            serde_json::from_str(first["reserved"].as_str().unwrap()).unwrap();
+        let second_reserved: Value =
+            serde_json::from_str(second["reserved"].as_str().unwrap()).unwrap();
+
+        assert_eq!(first_reserved["ip"], second_reserved["ip"]);
+        assert_eq!(
+            first_reserved["oz"],
+            calc_device_oz(&device.android_id).unwrap()
+        );
+        assert_eq!(first_reserved["oo"], calc_device_oo(&device.model).unwrap());
+        assert_eq!(first_reserved["bod"], device.board);
+        assert_eq!(first_reserved["brd"], device.brand);
+        assert_eq!(first_reserved["name"], device.product);
+        assert_eq!(first_reserved["manufact"], device.manufacturer);
+        assert_eq!(first_reserved["av"], "20.9.0.8");
+        assert_eq!(first["targetSdkVersion"], "30");
+        assert_eq!(first["appVersion"], "20.9.0.8");
     }
 
     #[test]

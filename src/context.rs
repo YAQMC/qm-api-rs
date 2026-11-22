@@ -473,7 +473,7 @@ impl ApiContext {
         let app_version = profile
             .qimei_app_version
             .clone()
-            .unwrap_or_else(|| "14.9.0.8".into());
+            .unwrap_or_else(|| "20.9.0.8".into());
         let sdk_version = profile
             .qimei_sdk_version
             .clone()
@@ -1894,11 +1894,10 @@ mod tests {
         let (_url, payload, _params, _ua) = task.await.unwrap().unwrap();
         let comm = &payload["comm"];
         assert_eq!(comm["aid"], "aid-d1");
-        assert_eq!(comm["QIMEI"], "q16-d1");
         assert_eq!(comm["QIMEI36"], "q36-d1");
         assert_eq!(comm["uid"], "u-d1");
         assert_ne!(comm["aid"], "aid-d0");
-        assert_ne!(comm["QIMEI"], "q16-d0");
+        assert!(comm.get("QIMEI").is_none());
         assert_ne!(comm["uid"], "u-d0");
     }
 }

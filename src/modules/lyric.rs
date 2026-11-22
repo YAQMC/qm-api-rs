@@ -237,7 +237,7 @@ mod tests {
             "GetPlayLyricInfo must not be zzc-signed, got {}",
             seen.uri
         );
-        assert_eq!(seen.body["comm"]["ct"], 24);
+        assert_eq!(seen.body["comm"]["ct"], "24");
         let param = &seen.body["req_0"]["param"];
         assert_eq!(param["songMID"], "001X3HEN1oK0Jr");
         assert_eq!(param["songMid"], "001X3HEN1oK0Jr");
