@@ -11,6 +11,7 @@ use crate::{
     CancellationToken, CgiOptions, Client, Credential, HttpMethod, HttpOptions, QmError, Result,
 };
 
+use crate::utils::to_songlist_write_type;
 /// The only account read operations exposed by this compatibility boundary.
 #[derive(Clone, Debug)]
 pub enum AccountRead {
@@ -296,7 +297,7 @@ impl AccountWrite {
                     "music.musicasset.PlaylistDetailWrite",
                     if add { "AddSonglist" } else { "DelSonglist" },
                     json!({"dirId": 201, "tid": 0, "bFmtUtf8": true,
-                        "v_songInfo": [{"songId": song_id, "songType": song_type}]}),
+                        "v_songInfo": [{"songId": song_id, "songType": to_songlist_write_type(song_type)}]}),
                 ))
             }
             Self::PlaylistTracks {
@@ -321,7 +322,7 @@ impl AccountWrite {
                     if add { "AddSonglist" } else { "DelSonglist" },
                     json!({"dirId": dir_id, "tid": tid, "bFmtUtf8": true,
                         "v_songInfo": songs.into_iter().map(|(song_id, song_type)|
-                            json!({"songId": song_id, "songType": song_type})).collect::<Vec<_>>() }),
+                            json!({"songId": song_id, "songType": to_songlist_write_type(song_type)})).collect::<Vec<_>>() }),
                 ))
             }
             Self::CreatePlaylist { name } => {

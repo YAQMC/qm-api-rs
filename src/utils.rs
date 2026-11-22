@@ -45,6 +45,18 @@ pub fn get_search_id() -> String {
     (t + n + r).to_string()
 }
 
+/// 将读取接口返回的歌曲类型转换为歌单写接口使用的类型.
+///
+/// 普通歌曲在搜索/详情响应中通常为 `1`，歌单写接口要求 `0`；长音频等
+/// 特殊类型需要保留自身编码。
+pub fn to_songlist_write_type(song_type: i64) -> i64 {
+    match song_type {
+        0 | 1 => 0,
+        5 | 111 | 112 | 113 => song_type,
+        _ => 1,
+    }
+}
+
 /// 递归将 JSON 值中的布尔值转换为整数 (0/1).
 pub fn bool_to_int(value: &serde_json::Value) -> serde_json::Value {
     match value {
@@ -70,6 +82,18 @@ mod tests {
     #[test]
     fn test_hash33() {
         assert_eq!(hash33("placeholder-musickey", 5381), 1143673215);
+    }
+
+    #[test]
+    fn songlist_write_types_match_the_wire_contract() {
+        for read_type in [0, 1, 2, 3, 4, 5, 6, 110, 111, 112, 113, 114] {
+            let expected = match read_type {
+                0 | 1 => 0,
+                5 | 111 | 112 | 113 => read_type,
+                _ => 1,
+            };
+            assert_eq!(to_songlist_write_type(read_type), expected);
+        }
     }
 
     #[test]

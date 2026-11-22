@@ -7,6 +7,7 @@ use crate::context::RequestOptions;
 use crate::error::{QmError, Result};
 use crate::models::songlist::*;
 use crate::models::Credential;
+use crate::utils::to_songlist_write_type;
 
 /// 构建歌单写操作的最小 JSON 参数.
 fn build_songlist_oper_param(dirid: i64, song_info: &[(i64, i64)], tid: i64) -> Value {
@@ -14,7 +15,7 @@ fn build_songlist_oper_param(dirid: i64, song_info: &[(i64, i64)], tid: i64) -> 
         "dirId": dirid,
         "tid": tid,
         "bFmtUtf8": true,
-        "v_songInfo": song_info.iter().map(|(sid, stype)| json!({ "songId": sid, "songType": stype })).collect::<Vec<_>>(),
+        "v_songInfo": song_info.iter().map(|(sid, stype)| json!({ "songId": sid, "songType": to_songlist_write_type(*stype) })).collect::<Vec<_>>(),
     })
 }
 
@@ -199,6 +200,57 @@ impl SonglistApi {
             Err(QmError::CgiApi { code: 80092, .. }) => Ok(false),
             Err(e) => Err(e),
         }
+    }
+
+    /// 按给定顺序重排歌单中的全部歌曲.
+    ///
+    /// `song_info` 必须包含歌单内全部歌曲的新顺序；歌曲类型可直接使用读取接口
+    /// 返回的 `Song::r#type`，这里会转换为写接口的线协议值。
+    pub async fn reorder_songs(
+        &self,
+        dirid: i64,
+        song_info: &[(i64, i64)],
+        tid: i64,
+        credential: Option<&Credential>,
+    ) -> Result<bool> {
+        if dirid <= 0 || tid < 0 || song_info.is_empty() {
+            return Err(QmError::ValueError(
+                "invalid playlist reorder request".into(),
+            ));
+        }
+        if song_info
+            .iter()
+            .any(|(song_id, song_type)| *song_id <= 0 || *song_type < 0)
+        {
+            return Err(QmError::ValueError(
+                "invalid playlist reorder song identity".into(),
+            ));
+        }
+        let param = json!({
+            "dirId": dirid,
+            "tid": tid,
+            "v_songPair": song_info
+                .iter()
+                .map(|(song_id, song_type)| json!({
+                    "songId": song_id,
+                    "songType": to_songlist_write_type(*song_type),
+                }))
+                .collect::<Vec<_>>(),
+        });
+        let mut opts = RequestOptions::default();
+        opts.require_login = true;
+        opts.retry = crate::RetryClass::Write;
+        opts.credential = credential.cloned();
+        let data = self
+            .base
+            .cgi(
+                "music.musicasset.PlaylistDetailWrite",
+                "SeqSonglist",
+                param,
+                opts,
+            )
+            .await?;
+        Ok(data.get("retCode").and_then(Value::as_i64).unwrap_or(-1) == 0)
     }
 
     /// 收藏歌曲到 "我喜欢" 歌单 (dirid 固定为 201).

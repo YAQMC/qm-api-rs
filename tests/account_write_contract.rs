@@ -167,7 +167,7 @@ async fn all_typed_mutations_use_fixed_wire_contracts() {
         cases.push((
             AccountWrite::PlaylistTracks { add, dir_id: 9, tid: 100, songs: vec![(42,0),(43,1)] },
             "PlaylistDetailWrite", method,
-            json!({"dirId":9,"tid":100,"bFmtUtf8":true,"v_songInfo":[{"songId":42,"songType":0},{"songId":43,"songType":1}]}),
+            json!({"dirId":9,"tid":100,"bFmtUtf8":true,"v_songInfo":[{"songId":42,"songType":0},{"songId":43,"songType":0}]}),
         ));
         cases.push((
             AccountWrite::CollectPlaylist {
