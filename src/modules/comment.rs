@@ -123,6 +123,7 @@ impl CommentApi {
                 Some(json!({"page": next_page, "last_seq": last_seq}))
             },
         )
+        .without_limit()
     }
 
     pub(crate) fn new(context: std::sync::Arc<crate::context::ApiContext>) -> Self {

@@ -9,6 +9,9 @@ use std::sync::Arc;
 
 use crate::error::Result;
 
+/// 分页器默认最多拉取的页数，避免错误的分页策略无限请求。
+pub const DEFAULT_PAGER_LIMIT: usize = 100;
+
 pub type FetchFn<T> =
     Arc<dyn Fn(Value) -> Pin<Box<dyn Future<Output = Result<T>> + Send>> + Send + Sync>;
 pub type NextParamsFn<T> = Arc<dyn Fn(&Value, &T) -> Option<Value> + Send + Sync>;
@@ -41,13 +44,20 @@ impl<T> Pager<T> {
             fetch: Arc::new(fetch),
             next_params: Arc::new(next_params),
             current_params: Some(initial),
-            limit: None,
+            limit: Some(DEFAULT_PAGER_LIMIT),
             yielded: 0,
         }
     }
 
+    /// 设置最大拉取页数。`0` 表示不发起任何请求。
     pub fn with_limit(mut self, limit: usize) -> Self {
         self.limit = Some(limit);
+        self
+    }
+
+    /// 显式关闭默认页数上限。
+    pub fn without_limit(mut self) -> Self {
+        self.limit = None;
         self
     }
 
@@ -257,6 +267,20 @@ mod tests {
         };
         let mut pager = Pager::new(json!({}), fetch, |_p, _r| None).with_limit(0);
         assert!(pager.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn default_limit_is_bounded_and_can_be_explicitly_disabled() {
+        let fetch = |_params: Value| -> Pin<Box<dyn Future<Output = Result<Value>> + Send>> {
+            Box::pin(async { Ok::<_, crate::error::QmError>(json!({"has_more": true})) })
+        };
+        let mut capped = Pager::new(json!({}), fetch, |_params, _resp: &Value| Some(json!({})));
+        assert_eq!(capped.collect().await.unwrap().len(), DEFAULT_PAGER_LIMIT);
+
+        let mut uncapped = Pager::new(json!({}), fetch, |_params, _resp: &Value| Some(json!({})))
+            .without_limit()
+            .with_limit(3);
+        assert_eq!(uncapped.collect().await.unwrap().len(), 3);
     }
 
     #[test]
