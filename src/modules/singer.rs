@@ -47,6 +47,54 @@ pub enum SexType {
     Group = 2,
 }
 
+/// 歌手条目排序方式.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrderType {
+    Latest = 0,
+    Hot = 1,
+}
+
+impl OrderType {
+    pub fn value(self) -> i64 {
+        self as i64
+    }
+}
+
+/// 歌手专辑分类筛选.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AlbumFilterType {
+    Studio = 0,
+    Live = 1,
+    Ep = 11,
+}
+
+impl AlbumFilterType {
+    pub fn value(self) -> i64 {
+        self as i64
+    }
+}
+
+/// 歌手主页专辑 Tab 的筛选选项.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AlbumTabOptions {
+    pub filter_type: Option<AlbumFilterType>,
+    pub include_filter_list: bool,
+}
+
+/// 歌手主页视频 Tab 的筛选选项.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct VideoTabOptions {
+    pub tag_id: Option<i64>,
+    pub include_tag_list: bool,
+}
+
+/// 歌手主页 Tab 的类型化扩展参数.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SingerTabExtension {
+    Album(AlbumTabOptions),
+    Video(VideoTabOptions),
+}
+
 /// 首字母索引.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IndexType {
@@ -194,7 +242,7 @@ impl SingerApi {
         Ok(serde_json::from_value(data)?)
     }
 
-    /// 获取歌手主页特定 Tab 的详情原始数据.
+    /// 获取歌手主页特定 Tab 的详情，默认按最新排序且不附加筛选.
     pub async fn get_tab_detail(
         &self,
         mid: &str,
@@ -202,19 +250,64 @@ impl SingerApi {
         page: i64,
         num: i64,
     ) -> Result<HomepageTabDetailResponse> {
+        self.get_tab_detail_with_options(mid, tab_type, page, num, OrderType::Latest, None)
+            .await
+    }
+
+    /// 获取歌手主页特定 Tab 的详情，并支持排序和筛选扩展参数.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn get_tab_detail_with_options(
+        &self,
+        mid: &str,
+        tab_type: TabType,
+        page: i64,
+        num: i64,
+        order: OrderType,
+        extension: Option<SingerTabExtension>,
+    ) -> Result<HomepageTabDetailResponse> {
+        let page_num = page
+            .checked_sub(1)
+            .filter(|_| page > 0 && num > 0 && !mid.trim().is_empty())
+            .ok_or_else(|| crate::QmError::ValueError("invalid singer tab pagination".into()))?;
+        let mut param = json!({
+            "SingerMid": mid,
+            "IsQueryTabDetail": 1,
+            "TabID": tab_type.tab_id(),
+            "PageNum": page_num,
+            "PageSize": num,
+            "Order": order.value(),
+        });
+        match (tab_type, extension) {
+            (TabType::Album, Some(SingerTabExtension::Album(options))) => {
+                param["AlbumExtension"] = json!({
+                    "IsNeedFilterType": if options.include_filter_list { 1 } else { 0 },
+                    "FilterType": options.filter_type.map(AlbumFilterType::value).unwrap_or_default(),
+                });
+            }
+            (TabType::Video, Some(SingerTabExtension::Video(options))) => {
+                if options.tag_id.is_some_and(|tag_id| tag_id < 0) {
+                    return Err(crate::QmError::ValueError(
+                        "singer video tab tag id must not be negative".into(),
+                    ));
+                }
+                param["VideoExtension"] = json!({
+                    "TagID": options.tag_id.unwrap_or_default(),
+                    "IsNeedTagList": if options.include_tag_list { 1 } else { 0 },
+                });
+            }
+            (_, Some(_)) => {
+                return Err(crate::QmError::ValueError(
+                    "singer tab extension does not match tab type".into(),
+                ));
+            }
+            (_, None) => {}
+        }
         let data = self
             .base
             .cgi(
                 "music.UnifiedHomepage.UnifiedHomepageSrv",
                 "GetHomepageTabDetail",
-                json!({
-                    "SingerMid": mid,
-                    "IsQueryTabDetail": 1,
-                    "TabID": tab_type.tab_id(),
-                    "PageNum": page - 1,
-                    "PageSize": num,
-                    "Order": 0,
-                }),
+                param,
                 RequestOptions::default(),
             )
             .await?;
@@ -265,65 +358,150 @@ impl SingerApi {
         Ok(serde_json::from_value(data)?)
     }
 
-    /// 获取歌手的歌曲列表.
+    /// 获取歌手的歌曲列表，默认按热度排序.
     pub async fn get_songs_list(
         &self,
         mid: &str,
         num: i64,
         page: i64,
     ) -> Result<SingerSongListResponse> {
+        self.get_songs_list_with_order(mid, num, page, OrderType::Hot)
+            .await
+    }
+
+    /// 获取歌手的歌曲列表并指定排序.
+    pub async fn get_songs_list_with_order(
+        &self,
+        mid: &str,
+        num: i64,
+        page: i64,
+        order: OrderType,
+    ) -> Result<SingerSongListResponse> {
+        let begin = singer_offset(page, num, mid, "singer song")?;
         let data = self
             .base
             .cgi(
                 "musichall.song_list_server",
                 "GetSingerSongList",
-                json!({ "singerMid": mid, "order": 1, "number": num, "begin": (page - 1) * num }),
+                json!({"singerMid": mid, "order": order.value(), "number": num, "begin": begin}),
                 RequestOptions::default(),
             )
             .await?;
         Ok(serde_json::from_value(data)?)
     }
 
-    /// 获取歌手的专辑列表.
+    /// 获取歌手的专辑列表，默认按热度排序.
     pub async fn get_album_list(
         &self,
         mid: &str,
         num: i64,
         page: i64,
     ) -> Result<SingerAlbumListResponse> {
-        let begin = page
-            .checked_sub(1)
-            .filter(|offset| *offset >= 0 && num > 0 && !mid.trim().is_empty())
-            .and_then(|offset| offset.checked_mul(num))
-            .ok_or_else(|| crate::QmError::ValueError("invalid artist album pagination".into()))?;
+        self.get_album_list_with_filter(mid, num, page, OrderType::Hot, None)
+            .await
+    }
+
+    /// 获取歌手的专辑列表，并支持排序和专辑类型筛选.
+    pub async fn get_album_list_with_filter(
+        &self,
+        mid: &str,
+        num: i64,
+        page: i64,
+        order: OrderType,
+        filter_type: Option<AlbumFilterType>,
+    ) -> Result<SingerAlbumListResponse> {
+        let begin = singer_offset(page, num, mid, "singer album")?;
+        let mut param = json!({
+            "singerMid": mid,
+            "order": order.value(),
+            "number": num,
+            "begin": begin,
+        });
+        if let Some(filter_type) = filter_type {
+            param["types"] = json!([filter_type.value()]);
+        }
         let data = self
             .base
             .cgi(
                 "music.musichallAlbum.AlbumListServer",
                 "GetAlbumList",
-                json!({ "singerMid": mid, "order": 1, "number": num, "begin": begin }),
+                param,
                 RequestOptions::default(),
             )
             .await?;
         Ok(serde_json::from_value(data)?)
     }
 
-    /// 获取歌手 MV 列表数据.
+    /// 获取歌手 MV 分类标签.
+    pub async fn get_mv_tag(&self, mid: &str) -> Result<SingerMvTagResponse> {
+        if mid.trim().is_empty() {
+            return Err(crate::QmError::ValueError(
+                "singer mid must not be empty".into(),
+            ));
+        }
+        let data = self
+            .base
+            .cgi(
+                "MvService.MvInfoProServer",
+                "GetSingerMvTag",
+                json!({ "singermid": mid }),
+                RequestOptions::default(),
+            )
+            .await?;
+        Ok(serde_json::from_value(data)?)
+    }
+
+    /// 获取歌手 MV 列表，默认按热度排序且不筛选标签.
     pub async fn get_mv_list(
         &self,
         mid: &str,
         num: i64,
         page: i64,
     ) -> Result<SingerMvListResponse> {
+        self.get_mv_list_with_filter(mid, num, page, OrderType::Hot, None)
+            .await
+    }
+
+    /// 获取歌手 MV 列表，并支持排序及分类标签筛选.
+    pub async fn get_mv_list_with_filter(
+        &self,
+        mid: &str,
+        num: i64,
+        page: i64,
+        order: OrderType,
+        tag_id: Option<i64>,
+    ) -> Result<SingerMvListResponse> {
+        let start = singer_offset(page, num, mid, "singer mv")?;
+        let mut param = json!({
+            "singermid": mid,
+            "order": order.value(),
+            "count": num,
+            "start": start,
+        });
+        if let Some(tag_id) = tag_id {
+            if tag_id < 0 {
+                return Err(crate::QmError::ValueError(
+                    "singer mv tag id must not be negative".into(),
+                ));
+            }
+            param["tagid"] = json!(tag_id);
+        }
         let data = self
             .base
             .cgi(
                 "MvService.MvInfoProServer",
                 "GetSingerMvList",
-                json!({ "singermid": mid, "order": 1, "count": num, "start": (page - 1) * num }),
+                param,
                 RequestOptions::default(),
             )
             .await?;
         Ok(serde_json::from_value(data)?)
     }
+}
+
+fn singer_offset(page: i64, num: i64, mid: &str, kind: &str) -> Result<i64> {
+    page.checked_sub(1)
+        .filter(|_| page > 0 && num > 0 && !mid.trim().is_empty())
+        .and_then(|offset| offset.checked_mul(num))
+        .ok_or_else(|| crate::QmError::ValueError(format!("invalid {kind} pagination")))
 }

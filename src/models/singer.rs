@@ -11,7 +11,9 @@ use crate::models::de::{null_as_default, str_or_zero};
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct TagOption {
+    #[serde(alias = "ID", alias = "id")]
     pub id: i64,
+    #[serde(alias = "Title", alias = "title", alias = "name")]
     pub name: String,
 }
 
@@ -71,6 +73,40 @@ pub struct SingerIndexPageResponse {
     pub base: SingerTypeListResponse,
 }
 
+/// 服务端下发的 Tab 筛选项.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct TabFilterItem {
+    #[serde(alias = "ID", alias = "id")]
+    pub id: i64,
+    #[serde(alias = "Title", alias = "title", alias = "name")]
+    pub title: String,
+}
+
+/// 服务端下发的 Tab 筛选列表.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct TabFilterList {
+    #[serde(alias = "DefaultID")]
+    pub default_id: i64,
+    #[serde(alias = "ItemList")]
+    pub items: Vec<TabFilterItem>,
+}
+
+/// 歌手名称特殊展示信息.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct SingerNameSpecialDisplay {
+    #[serde(alias = "DisplayType")]
+    pub display_type: i64,
+    #[serde(alias = "PicFile")]
+    pub pic_file: String,
+    #[serde(alias = "SignatureNameOverlapRatio")]
+    pub signature_name_overlap_ratio: f64,
+    #[serde(alias = "Name")]
+    pub name: String,
+}
+
 /// 歌手主页基础信息.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
@@ -107,6 +143,8 @@ pub struct HomepageSinger {
     pub singer_pic: String,
     #[serde(alias = "SingerPMid")]
     pub singer_pmid: String,
+    #[serde(alias = "SingerNameSpecialDisplay", alias = "singerNameSpecialDisplay")]
+    pub name_special_display: Option<SingerNameSpecialDisplay>,
 }
 
 /// 主页标签元信息.
@@ -161,6 +199,9 @@ jsonpath_model!(HomepageTabDetailResponse {
     song_tab: "$.SongTab.List[*]" => Vec<Song>,
     album_tab: "$.AlbumTab.AlbumList[*]" => Vec<AlbumBrief>,
     video_tab: "$.VideoTab.VideoList[*]" => Vec<VideoBrief>,
+    song_tag_info_list: "$.SongTab.SongTagInfoList" => Vec<Value>,
+    album_type_list: "$.AlbumTab.TypeList" => TabFilterList,
+    video_tag_list: "$.VideoTab.TagList" => Vec<TabFilterItem>,
 });
 
 jsonpath_model!(HomepageHeaderResponse {
@@ -295,3 +336,50 @@ jsonpath_model!(SingerMvListResponse {
     total: "$.total" => i64,
     mv_list: "$.list" => Vec<VideoBrief>,
 });
+
+jsonpath_model!(SingerMvTagResponse {
+    tags: "$.list[*]" => Vec<TagOption>,
+});
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn homepage_singer_keeps_special_name_display() {
+        let singer: HomepageSinger = serde_json::from_value(json!({
+            "SingerMid":"mid",
+            "Name":"Taylor Swift",
+            "SingerNameSpecialDisplay":{
+                "DisplayType":2,
+                "PicFile":"https://example.test/name.png",
+                "SignatureNameOverlapRatio":0.25,
+                "Name":"Taylor Swift"
+            }
+        }))
+        .unwrap();
+        let special = singer.name_special_display.unwrap();
+        assert_eq!(special.display_type, 2);
+        assert_eq!(special.pic_file, "https://example.test/name.png");
+        assert_eq!(special.signature_name_overlap_ratio, 0.25);
+    }
+
+    #[test]
+    fn tab_filters_and_mv_tags_decode_server_alias_shapes() {
+        let tab: HomepageTabDetailResponse = serde_json::from_value(json!({
+            "AlbumTab":{"TypeList":{"DefaultID":0,"ItemList":[{"ID":3,"Title":"录音室"}]}},
+            "VideoTab":{"TagList":[{"ID":8,"Title":"官方"}]},
+            "SongTab":{"SongTagInfoList":[{"foo":"bar"}]}
+        }))
+        .unwrap();
+        assert_eq!(tab.album_type_list.items[0].id, 3);
+        assert_eq!(tab.video_tag_list[0].title, "官方");
+        assert_eq!(tab.song_tag_info_list[0]["foo"], "bar");
+
+        let tags: SingerMvTagResponse =
+            serde_json::from_value(json!({"list":[{"ID":7,"Title":"现场"}]})).unwrap();
+        assert_eq!(tags.tags[0].id, 7);
+        assert_eq!(tags.tags[0].name, "现场");
+    }
+}
