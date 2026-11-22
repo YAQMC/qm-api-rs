@@ -16,6 +16,7 @@ pub mod search;
 pub mod singer;
 pub mod song;
 pub mod songlist;
+pub mod sound_power;
 pub mod top;
 pub mod user;
 
@@ -35,6 +36,7 @@ pub use search::SearchApi;
 pub use singer::SingerApi;
 pub use song::SongApi;
 pub use songlist::SonglistApi;
+pub use sound_power::SoundPowerApi;
 pub use top::TopApi;
 pub use user::UserApi;
 

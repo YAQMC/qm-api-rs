@@ -16,6 +16,7 @@ pub mod search;
 pub mod singer;
 pub mod song;
 pub mod songlist;
+pub mod sound_power;
 pub mod top;
 pub mod user;
 
