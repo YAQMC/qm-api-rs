@@ -137,6 +137,10 @@ let client = Client::new(None, None)?;
 client.load_device(std::path::Path::new("device.json"))?;
 ```
 
+需要可复现且内部一致的 Android 设备快照时，可用
+`Device::with_profile(DeviceProfile::{Vivo, Xiaomi, Oppo}, seed)` 生成。设备档案会统一
+board、product、model、fingerprint、系统版本及 QIMEI 请求字段，避免手工混搭字段。
+
 > 说明：Android session 是**账号运行态**（按 `musicid` 缓存在内存中），不属于
 > 设备身份，不随 `save_device` 持久化；每次启动会按需重新申请。
 
@@ -195,6 +199,8 @@ curl 'http://127.0.0.1:3000/song/url?mid=0039MnYb0qxYhV'
 ## 分页
 
 支持连续翻页：`Pager` 通用分页器 + `page` / `offset` 便捷策略。
+每次 `new` / `page` / `offset` 默认最多拉取 `DEFAULT_PAGER_LIMIT`（100）页，防止错误的分页策略无限请求；
+需要明确遍历更多页时调用 `.with_limit(n)`，确实需要关闭保护时调用 `.without_limit()`。
 
 ```rust
 use qqmusic_api::{Pager, offset, page};
@@ -221,7 +227,7 @@ let mut pager = offset(
         }
     },
     |resp: &qqmusic_api::models::top::TopDetailResponse| resp.songs.len() >= 10,
-).with_limit(10);   // 可选: 限制最大页数
+).with_limit(10);   // 可选: 覆盖默认的 100 页上限
 
 let songs = pager.collect_items(|r| r.songs.clone()).await?;   // 跨页展开条目
 // 或: let pages = pager.collect().await?;                       // 收集各页响应
@@ -296,14 +302,22 @@ singer.get_singer_list(area, sex, genre) -> SingerTypeListResponse
 singer.get_singer_list_index(area, sex, genre, index, page, num) -> SingerIndexPageResponse
 singer.get_info(mid) -> HomepageHeaderResponse        // Android
 singer.get_tab_detail(mid, TabType, page, num) -> HomepageTabDetailResponse
+singer.get_tab_detail_with_options(mid, TabType, page, num, OrderType, Option<SingerTabExtension>) -> HomepageTabDetailResponse
 singer.get_desc(&[mids], ex_singer, wiki_singer, group_singer, pic, photos) -> SingerDetailResponse
 singer.get_similar(mid, number) -> SimilarSingerResponse
 singer.get_songs_list(mid, num, page) -> SingerSongListResponse
+singer.get_songs_list_with_order(mid, num, page, OrderType) -> SingerSongListResponse
 singer.get_album_list(mid, num, page) -> SingerAlbumListResponse
+singer.get_album_list_with_filter(mid, num, page, OrderType, Option<AlbumFilterType>) -> SingerAlbumListResponse
+singer.get_mv_tag(mid) -> SingerMvTagResponse
 singer.get_mv_list(mid, num, page) -> SingerMvListResponse
+singer.get_mv_list_with_filter(mid, num, page, OrderType, Option<i64>) -> SingerMvListResponse
 ```
 
-枚举：`AreaType` `GenreType` `SexType` `IndexType` `TabType`（位于 `qqmusic_api::modules::singer`）。
+枚举：`AreaType` `GenreType` `SexType` `IndexType` `TabType` `OrderType` `AlbumFilterType`。
+主页扩展参数使用 `SingerTabExtension::{Album(AlbumTabOptions), Video(VideoTabOptions)}`；专辑可筛选
+Studio/Live/EP，视频可按标签过滤并请求标签列表。原有列表方法保持兼容：歌曲、专辑和 MV 默认按热度，
+主页 Tab 默认按最新排序。
 
 ## album（专辑）
 
@@ -355,6 +369,7 @@ songlist.create(dirname, credential) -> CreateDeleteSonglistResp          // 需
 songlist.delete(dirid, credential) -> CreateDeleteSonglistResp            // 需要登录
 songlist.add_songs(dirid, &[(song_id, song_type)], tid, credential) -> bool
 songlist.del_songs(dirid, &[(song_id, song_type)], tid, credential) -> bool
+songlist.reorder_songs(dirid, &[(song_id, song_type)], tid, credential) -> bool
 songlist.like_song(&[(song_id, song_type)], credential) -> bool   // 添加到"我喜欢"(dirid=201)
 songlist.unlike_song(&[(song_id, song_type)], credential) -> bool
 
@@ -365,6 +380,25 @@ songlist.raw_is_playlist_fan(param, credential) -> Value               // 检查
 songlist.raw_seq_songlist(param, credential) -> bool                   // 歌单排序 (需要登录)
 songlist.raw_cancel_fav_audio(param, credential) -> Value              // 取消收藏长音频 (需要登录)
 ```
+
+`add_songs`、`del_songs`、`reorder_songs` 接受读取接口或 `Song::r#type` 提供的歌曲类型，并在写请求边界
+转换成上游要求的 `songType` 值。`reorder_songs` 的列表必须包含歌单内全部歌曲的新顺序。
+
+## sound_power（音响力）
+
+```rust
+sound_power.get_detail(credential) -> SoundPowerDetailResponse
+sound_power.get_hugevip_rule(credential) -> HugevipLevelRuleResponse
+sound_power.get_friend_rank(offset, limit, last_uin, rankno, credential) -> FriendRankResponse
+sound_power.like_friend(uin, cancel, credential) -> LikeFriendResponse
+sound_power.set_rank_privacy(status, credential) -> SetRankPrivacyResponse
+sound_power.get_medal_entry(enc_uin, credential) -> SoundPowerMedalEntryResponse
+sound_power.get_tasks(credential) -> ActTaskModulesResponse
+sound_power.get_tasks_with(act_id, Option<&[String]>, credential) -> ActTaskModulesResponse
+```
+
+该模块所有请求都需要登录。`credential` 为 `Some` 时使用该显式账户，不会切换或修改 `Client` 的默认账户；
+为 `None` 时使用客户端当前凭证。点赞和隐私设置是写操作，调用方应自行防止重复提交。
 
 ## comment（评论）
 

@@ -1,6 +1,7 @@
 //! 下游 crate 不写 `reqwest` 也能使用公开 API.
 use std::sync::Arc;
 
+use qqmusic_api::DEFAULT_PAGER_LIMIT;
 use qqmusic_api::{
     ApiTransport, CancellationToken, Client, HttpMethod, RedirectMode, RetryClass,
     TransportRequest, TransportResponse,
@@ -12,6 +13,7 @@ fn public_types_are_named_without_reqwest() {
     let _r = RetryClass::Write;
     let _d = RedirectMode::None;
     let _t = CancellationToken::new();
+    assert_eq!(DEFAULT_PAGER_LIMIT, 100);
     let req = TransportRequest::new(HttpMethod::Post, "https://u.y.qq.com/cgi-bin/musicu.fcg");
     assert_eq!(req.retry, RetryClass::SafeRead);
     let _ = Client::new(None, None);

@@ -33,6 +33,7 @@
 //! - `Client::mv` —— MV
 //! - `Client::top` —— 排行榜
 //! - `Client::songlist` —— 歌单
+//! - `Client::sound_power` —— 音响力、好友听歌榜与勋章入口
 //! - `Client::comment` —— 评论
 //! - `Client::recommend` —— 推荐
 //! - `Client::discovery` —— Web 分类、播客、新 MV、焦点卡和区域页
@@ -79,7 +80,7 @@ pub mod modules;
 
 pub use client::{CgiOptions, Client, HttpOptions};
 pub use credential_store::{CredentialPersist, CredentialStore, FileCredentialPersist};
-pub use device::{random_imei, Device, OSVersion};
+pub use device::{random_imei, Device, DeviceProfile, OSVersion};
 pub use error::{ErrorCategory, NetworkError, NetworkErrorKind, QmError, QrLoginReason, Result};
 pub use media::MediaSource;
 pub use models::login::{OAuthLoginProvider, OAuthPresentation};
@@ -89,9 +90,12 @@ pub use models::Credential;
 pub use modules::helper_utils::UploadFileSession;
 pub use modules::login_utils::{PhoneLoginSession, PollInterval, QRCodeLoginSession};
 pub use modules::search::SearchType;
-pub use modules::singer::{AreaType, GenreType, IndexType, SexType, TabType};
+pub use modules::singer::{
+    AlbumFilterType, AlbumTabOptions, AreaType, GenreType, IndexType, OrderType, SexType,
+    SingerTabExtension, TabType, VideoTabOptions,
+};
 pub use modules::song::{canonical_song_url, SongFileInfo, SongFileType, SongQuality};
-pub use pagination::{offset, page, Pager};
+pub use pagination::{offset, page, Pager, DEFAULT_PAGER_LIMIT};
 pub use reply::{BatchReport, CgiReply};
 pub use transport::{
     ApiTransport, CancellationToken, HttpBody, HttpMethod, RedirectMode, ReqwestApiTransport,

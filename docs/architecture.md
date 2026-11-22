@@ -95,11 +95,16 @@ MQTT 登录推送（`mqtt.rs`）仍走独立 WebSocket，不进入 `ApiTransport
 
 ## comm 公共参数
 
+默认 `comm` 各标量按上游线协议编码为 JSON 字符串，包括 `ct`、`cv`、`v`、`uin`/`qq`、`g_tk`
+和 `notice` 等。Android 请求还会注入 `traceid=10002_<musicid-or-guid>_<unix-seconds>`；
+当前默认 Android 协议版本为 `20.9.0.8`（`cv=20090008`）。显式 `override_comm` 会保留调用方提供的原始
+JSON 形状，用于已经验证过的桌面 Web/OAuth 等特殊请求。
+
 `versioning::VersionPolicy::build_comm` 按平台构建 `comm`：
 
-- **Android** (`ct=11`, `cv=14090008`)：
-  `chid=10003505`, `tmeAppID=qqmusic`, `QIMEI`/`QIMEI36`（自动申请）,
-  `OpenUDID`/`udid`, `aid`, `os_ver`, `phonetype`, `devicelevel`, `rom`, 登录字段 `qq`/`authst`/`tmeLoginType`。
+- **Android** (`ct=11`, `cv=20090008`)：
+  `chid=10003505`, `tmeAppID=qqmusic`, `traceid`, `QIMEI36`（自动申请）,
+  `OpenUDID`/`OpenUDID2`/`udid`, `aid`, `os_ver`, `phonetype`, 登录字段 `qq`/`authst`/`tmeLoginType`。
   **登录 CGI 靠 `comm.authst`**，即使请求上没有 Cookie 也能登录。
 - **Desktop** (`ct=19`, `cv=2201`)：
   `chid=0`, `uin`, `g_tk`（`hash33(musickey, 5381)`）, `guid`。comm 无 `authst`。

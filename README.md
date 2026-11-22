@@ -12,7 +12,7 @@
 
 ## 特性
 
-- 🎵 涵盖常见 API：歌曲 / 搜索 / 歌手 / 专辑 / 歌词 / MV / 排行榜 / 歌单 / 评论 / 推荐 / 用户 / 登录 / 私信 / 跨端播放快照 / 上传辅助
+- 🎵 涵盖常见 API：歌曲 / 搜索 / 歌手 / 专辑 / 歌词 / MV / 排行榜 / 歌单 / 音响力 / 评论 / 推荐 / 用户 / 登录 / 私信 / 跨端播放快照 / 上传辅助
 - 🚀 调用简便，函数命名易懂，方法均带详细文档
 - ⚡ 完全异步（`tokio` + 可注入 `ApiTransport`，默认 reqwest 0.12）
 - 🔐 内置签名算法（`zzc_sign`）与 QRC 歌词 3DES 解密
@@ -73,14 +73,15 @@ cargo run --example demo
 | --- | --- | --- |
 | `client.song` | 歌曲 | `get_song_urls`, `get_detail`, `get_similar_song`, `get_sheet(SheetType)` 等；`canonical_song_url` 生成经过验证的公开歌曲页链接 |
 | `client.search` | 搜索 | `search_by_type`, `search_songlists`, `general_search`, `get_hotkey`, `complete`, `quick_search` |
-| `client.singer` | 歌手 | `get_info`, `get_songs_list`, `get_album_list`, `get_similar` 等 |
+| `client.singer` | 歌手 | `get_info`, `get_songs_list_with_order`, `get_album_list_with_filter`, `get_mv_tag`, `get_mv_list_with_filter` 等 |
 | `client.album` | 专辑 | `get_detail`, `get_song`, `get_new_album` |
 | `client.lyric` | 歌词 | `get_lyric`（自动 QRC 解密）, `get_ai_dict` 等 |
 | `client.mv` | MV | `get_detail`, `get_mv_urls`, `get_mv_list` |
 | `client.top` | 排行榜 | `get_category`, `get_detail`, `get_web_detail` |
 | `client.discovery` | Web 发现 | `categories`, `podcasts`, `new_mvs`, `featured`, `area` |
 | `client.device_playback` | 跨端播放 | `get_other_platform_current_playlist` (只读快照)、`report_listening_music` (显式状态上报) |
-| `client.songlist` | 歌单 | `get_detail`, `create`, `delete`, `add_songs`, `like_song` 等 |
+| `client.songlist` | 歌单 | `get_detail`, `create`, `delete`, `add_songs`, `reorder_songs`, `like_song` 等 |
+| `client.sound_power` | 音响力 | `get_detail`, `get_hugevip_rule`, `get_friend_rank`, `get_medal_entry`, `get_tasks` 等 |
 | `client.comment` | 评论 | `get_hot_comments`, `get_new_comments`, `add_comment` 等 |
 | `client.recommend` | 推荐 | `get_web_home_feed`, `get_web_songlists`, `get_web_newsongs`；原有 Home / Guess / Radar / Daily 接口保持兼容 |
 | `client.user` | 用户 | `get_homepage`, `get_vip_info`, `get_created_songlist`, `fav_songlist`, `add_dislike(DislikeIdType)` 等 |
